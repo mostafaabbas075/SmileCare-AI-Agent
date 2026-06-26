@@ -1,0 +1,117 @@
+version: "3.9"
+
+# =============================================================================
+# AI Dental Clinic Receptionist — Full Stack Docker Compose
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: dental_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dental_receptionist}
+      POSTGRES_USER: ${POSTGRES_USER:-dental_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dental_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dental_user} -d ${POSTGRES_DB:-dental_receptionist}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dental_net
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — Vector Database
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    container_name: dental_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dental_net
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dental_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      POSTGRES_HOST: db
+      QDRANT_HOST: qdrant
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - ./knowledge_base:/knowledge_base:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - dental_net
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /app/app
+
+  # ---------------------------------------------------------------------------
+  # Next.js Frontend
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dental_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - dental_net
+    environment:
+      - WATCHPACK_POLLING=true # ضروري للـ hot-reload داخل الدوكر
+
+# =============================================================================
+# Volumes & Networks
+# =============================================================================
+volumes:
+  postgres_data:
+    name: dental_postgres_data
+  qdrant_data:
+    name: dental_qdrant_data
+
+networks:
+  dental_net:
+    name: dental_network
+    driver: bridge

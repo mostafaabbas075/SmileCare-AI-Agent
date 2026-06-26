@@ -1,0 +1,6 @@
+id,name,specialty,experience_years,phone,email,working_days,start_time,end_time
+1,Dr. Ahmed Hassan,Orthodontics,12,01011111111,ahmed@smilecare.com,"Saturday-Thursday",10:00,17:00
+2,Dr. Sara Mohamed,Dental Surgery,10,01022222222,sara@smilecare.com,"Sunday-Thursday",14:00,21:00
+3,Dr. Omar Ali,Dental Implants,15,01033333333,omar@smilecare.com,"Saturday-Wednesday",11:00,19:00
+4,Dr. Mariam Adel,Pediatric Dentistry,8,01044444444,mariam@smilecare.com,"Sunday-Thursday",09:00,16:00
+5,Dr. Youssef Nabil,General Dentistry,9,01055555555,youssef@smilecare.com,"Saturday-Thursday",12:00,20:00

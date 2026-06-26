@@ -1,0 +1,11 @@
+id,name,price_egp,duration_minutes,doctor_specialty
+1,Dental Consultation,300,30,General Dentistry
+2,Teeth Cleaning,600,45,General Dentistry
+3,Teeth Whitening,2500,60,General Dentistry
+4,Root Canal Treatment,3500,90,Dental Surgery
+5,Dental Implant,15000,120,Dental Implants
+6,Braces,18000,60,Orthodontics
+7,Tooth Extraction,900,45,Dental Surgery
+8,Pediatric Consultation,400,30,Pediatric Dentistry
+9,Dental Filling,800,45,General Dentistry
+10,Dental X-Ray,250,15,General Dentistry

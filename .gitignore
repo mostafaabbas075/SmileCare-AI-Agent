@@ -1,0 +1,68 @@
+# =============================================================================
+# AI Dental Clinic Receptionist — .gitignore
+# =============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+env/
+venv/
+.venv/
+ENV/
+pip-wheel-metadata/
+
+# Environment variables — NEVER commit real .env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Pytest & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# Ruff & Mypy cache
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Alembic (keep versions, ignore __pycache__ inside)
+backend/alembic/versions/__pycache__/
+
+# Logs
+*.log
+logs/
+
+# Databases & Vector Storage Data
+qdrant_storage/
+postgres_data/
+qdrant_data/
+*.db
+*.sqlite3
+
+# Node & Frontend
+node_modules/
+.next/
+dist/
+out/
+build/
