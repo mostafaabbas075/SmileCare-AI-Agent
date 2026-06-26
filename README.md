@@ -15,7 +15,7 @@ An intelligent, full-stack **AI Agent** designed to automate dental clinic recep
 
 I recently shared a full demonstration of this AI Agent in action, showcasing its reasoning, validation logic, and memory capabilities. 
 
-👉 **[Watch the Demo & Join the Discussion on LinkedIn](YOUR_LINKEDIN_POST_LINK_HERE)**
+👉 **[Watch the Demo & Join the Discussion on LinkedIn](https://www.linkedin.com/posts/activity-7476392880815820800-BNWc?utm_source=share&utm_medium=member_desktop&rcm=ACoAAExppuYBLUqjnF-K3rXxALthfcmZWvcr_S8)**
 
 ---
 
