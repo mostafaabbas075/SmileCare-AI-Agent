@@ -39,3 +39,5 @@ structlog==24.4.0
 
 # Utilities
 python-dateutil==2.9.0
+
+PyJWT>=2.8.0
