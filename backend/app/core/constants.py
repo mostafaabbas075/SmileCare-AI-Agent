@@ -7,7 +7,14 @@ a single place to update values used across models, schemas, and business logic.
 
 from __future__ import annotations
 
-from enum import StrEnum
+import sys
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    from enum import Enum
+    class StrEnum(str, Enum):
+        pass
 
 
 class AppointmentStatus(StrEnum):
