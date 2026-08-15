@@ -26,8 +26,8 @@ COPY . .
 # ── Development ───────────────────────────────────────────────────────────────
 FROM base AS development
 
-COPY requirements-dev.txt .
-RUN pip install -r requirements-dev.txt
+COPY requirements-dev.txt* .
+RUN if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
 
 EXPOSE 8000
 
@@ -39,6 +39,7 @@ FROM base AS production
 RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 USER appuser
 
-EXPOSE 8000
+# منفذ 7860 متوافق مع Hugging Face Spaces
+EXPOSE 7860
 
-CMD ["gunicorn", "app.main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "4", "--bind", "0.0.0.0:8000", "--timeout", "120"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
