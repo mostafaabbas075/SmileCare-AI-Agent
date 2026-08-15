@@ -8,7 +8,12 @@ and marking appointments as NO_SHOW (enforcing Policy V1 penalty escalation).
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 
 import structlog
 from fastapi import APIRouter, Depends, Query, Request, status
