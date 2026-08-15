@@ -15,7 +15,7 @@ Usage::
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,39 +46,48 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = Field(default=8000, ge=1, le=65535)
     api_prefix: str = "/api/v1"
-    # تم إضافة 127.0.0.1 لتجنب مشاكل الـ CORS في المتصفح
-    allowed_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173"]
+    allowed_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+    ]
 
     # -------------------------------------------------------------------------
-    # Security
+    # Security & Auth
     # -------------------------------------------------------------------------
-    secret_key: str = Field(min_length=32)
+    secret_key: str = Field(default="SmileCare_Super_Secret_Key_Change_In_Production_2026", min_length=32)
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = Field(default=60, ge=1)
+    access_token_expire_minutes: int = Field(default=720, ge=1)  # 12 Hours
     refresh_token_expire_days: int = Field(default=7, ge=1)
 
     # -------------------------------------------------------------------------
-    # PostgreSQL (individual parts — URL assembled by computed_field)
+    # Initial Admin Seeding (First Deployment Credentials via Environment)
+    # -------------------------------------------------------------------------
+    admin_username: str = "admin"
+    admin_password: str = "ChangeThisStrongPassword2026!"
+
+    # -------------------------------------------------------------------------
+    # PostgreSQL (Neon Cloud Compatible)
     # -------------------------------------------------------------------------
     postgres_host: str = "localhost"
     postgres_port: int = Field(default=5432, ge=1, le=65535)
     postgres_db: str = "dental_receptionist"
     postgres_user: str = "dental_user"
-    postgres_password: str
+    postgres_password: str = "dental_pass"
 
     # -------------------------------------------------------------------------
-    # Qdrant
+    # Qdrant (Supports both local & Cloud via HTTPS + API Key)
     # -------------------------------------------------------------------------
     qdrant_host: str = "localhost"
     qdrant_port: int = Field(default=6333, ge=1, le=65535)
+    qdrant_api_key: Optional[str] = None
     qdrant_collection_name: str = "dental_knowledge"
 
     # -------------------------------------------------------------------------
     # Google Gemini
     # -------------------------------------------------------------------------
-    # تم تغيير الاسم هنا ليطابق الكود في ملف dental_agent.py
-    GOOGLE_API_KEY: str
-    gemini_model: str = "gemini-2.5-flash"
+    GOOGLE_API_KEY: str = "dummy_gemini_key"
+    gemini_model: str = "gemini-3.5-flash-lite"
 
     # -------------------------------------------------------------------------
     # Sentence Transformers
@@ -87,31 +96,46 @@ class Settings(BaseSettings):
     embedding_dimension: int = Field(default=384, ge=1)
 
     # -------------------------------------------------------------------------
+    # Aliases & Properties for Uppercase compatibility across the App
+    # -------------------------------------------------------------------------
+    @property
+    def ADMIN_USERNAME(self) -> str:
+        return self.admin_username
+
+    @property
+    def ADMIN_PASSWORD(self) -> str:
+        return self.admin_password
+
+    @property
+    def GEMINI_MODEL(self) -> str:
+        return self.gemini_model
+
+    @property
+    def QDRANT_HOST(self) -> str:
+        return self.qdrant_host
+
+    @property
+    def QDRANT_API_KEY(self) -> Optional[str]:
+        return self.qdrant_api_key
+
+    @property
+    def QDRANT_COLLECTION_NAME(self) -> str:
+        return self.qdrant_collection_name
+
+    # -------------------------------------------------------------------------
     # Computed fields (not read from .env)
     # -------------------------------------------------------------------------
     @computed_field  # type: ignore[misc]
     @property
-    def QDRANT_URL(self) -> str:
-        """تمت الإضافة: رابط Qdrant ديناميكي ليستخدمه الـ Retriever."""
-        return f"http://{self.qdrant_host}:{self.qdrant_port}"
-
-    @computed_field  # type: ignore[misc]
-    @property
     def database_url(self) -> str:
-        """Async-compatible PostgreSQL DSN using asyncpg driver."""
-        return (
+        """Async-compatible PostgreSQL DSN supporting local & Neon SSL."""
+        url = (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
-
-    @computed_field  # type: ignore[misc]
-    @property
-    def database_url_sync(self) -> str:
-        """Synchronous PostgreSQL DSN using psycopg2 (for Alembic)."""
-        return (
-            f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        if "neon.tech" in self.postgres_host:
+            url += "?ssl=require"  # 👈 SSL الخاص بـ asyncpg
+        return url
 
     @computed_field  # type: ignore[misc]
     @property
@@ -122,12 +146,7 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return the cached Settings singleton.
-
-    Using ``lru_cache`` ensures the settings object (and its .env parsing) is
-    only created once per process, even if ``get_settings()`` is called from
-    multiple modules.
-    """
+    """Return the cached Settings singleton."""
     return Settings()  # type: ignore[call-arg]
 
 

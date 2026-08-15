@@ -13,11 +13,13 @@ from enum import StrEnum
 class AppointmentStatus(StrEnum):
     """Life-cycle states of an appointment."""
 
+    PENDING = "pending"
     SCHEDULED = "scheduled"
     CONFIRMED = "confirmed"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     NO_SHOW = "no_show"
+    EXPIRED = "expired"
 
 
 class Gender(StrEnum):

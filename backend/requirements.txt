@@ -26,7 +26,7 @@ langchain-core==0.3.25
 
 # RAG / Embeddings
 sentence-transformers==3.3.1
-# تم تثبيت الإصدار ليتوافق مع نسخة السيرفر عندك
+
 qdrant-client==1.9.2
 
 # HTTP Client (async)

@@ -1,8 +1,8 @@
 """
 Appointment ORM model.
 
-Central entity linking a Patient, Doctor, and Service to a specific
-date and time. The status field tracks the appointment life-cycle.
+Central entity linking a Patient, Doctor, Service, and Clinic to a specific
+date and time. The status field tracks the appointment life-cycle with strict multi-tenant isolation.
 """
 
 from __future__ import annotations
@@ -19,19 +19,27 @@ from app.core.constants import AppointmentStatus
 from app.database.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.clinic import Clinic
     from app.models.doctor import Doctor
     from app.models.patient import Patient
     from app.models.service import Service
 
 
 class Appointment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """A scheduled appointment between a patient and a doctor for a service."""
+    """A scheduled appointment between a patient and a doctor for a service within a specific clinic."""
 
     __tablename__ = "appointments"
 
     # ------------------------------------------------------------------
     # Foreign Keys
     # ------------------------------------------------------------------
+    clinic_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("clinics.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        doc="Multi-clinic tenant identifier.",
+    )
     patient_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("patients.id", ondelete="CASCADE"),
@@ -75,6 +83,7 @@ class Appointment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # ------------------------------------------------------------------
     # Relationships
     # ------------------------------------------------------------------
+    clinic: Mapped["Clinic"] = relationship(back_populates="appointments", lazy="select")
     patient: Mapped["Patient"] = relationship(back_populates="appointments", lazy="select")
     doctor: Mapped["Doctor"] = relationship(back_populates="appointments", lazy="select")
     service: Mapped["Service"] = relationship(back_populates="appointments", lazy="select")
@@ -82,6 +91,7 @@ class Appointment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def __repr__(self) -> str:
         return (
             f"<Appointment id={self.id} "
+            f"clinic_id={self.clinic_id} "
             f"date={self.appointment_date} "
             f"status={self.status}>"
         )

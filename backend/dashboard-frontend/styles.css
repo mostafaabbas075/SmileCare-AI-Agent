@@ -1,0 +1,139 @@
+/* استيراد خط Tajawal من Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap');
+
+/* المتغيرات الأساسية للنظام */
+:root {
+    --font-tajawal: 'Tajawal', sans-serif;
+    --color-primary: #10b981;    /* اللون الأساسي الافتراضي (يتغير ديناميكياً حسب العيادة) */
+    --color-bg-dark: #0f172a;    /* Slate 900 */
+    --color-card-dark: #1e293b;  /* Slate 800 */
+    --color-border: #334155;     /* Slate 700 */
+}
+
+/* الإعدادات العامة للشاشة والخطوط */
+* {
+    font-family: var(--font-tajawal);
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background-color: var(--color-bg-dark);
+    color: #f8fafc;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+}
+
+/* تخصيص شريط التمرير المظلم (Custom Dark Scrollbar) */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--color-primary);
+}
+
+/* تخصيص شريط التمرير الداخلي للـ Timeline داخل الـ Modal */
+#audit-timeline::-webkit-scrollbar {
+    width: 4px;
+}
+
+#audit-timeline::-webkit-scrollbar-thumb {
+    background: #475569;
+    border-radius: 2px;
+}
+
+/* تنسيق أزرار السايدبار المباشرة (Sidebar Navigation Buttons) */
+.sidebar-btn {
+    transition: all 0.2s ease-in-out;
+}
+
+.sidebar-btn:hover {
+    background-color: rgba(51, 65, 85, 0.5);
+}
+
+.sidebar-btn.active {
+    background-color: var(--color-primary) !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+/* تنسيق التبويبات الرئيسية (Main Navigation Tabs) */
+.tab-btn {
+    transition: all 0.2s ease-in-out;
+}
+
+.tab-btn.active {
+    background-color: var(--color-primary) !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+/* أزرار فلاتر الحالات (Status Filter Buttons) */
+.status-filter-btn {
+    transition: all 0.2s ease-in-out;
+}
+
+.status-filter-btn.active {
+    background-color: #3b82f6 !important;
+    color: #ffffff !important;
+    border-color: #60a5fa !important;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+}
+
+/* تأثيرات صفوف الجدول عند التمرير (Table Row Hover Effect) */
+table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+table tbody tr {
+    transition: background-color 0.15s ease-in-out;
+}
+
+table tbody tr:hover {
+    background-color: rgba(51, 65, 85, 0.4);
+}
+
+/* تأثير زجاجي خفيف للكروت والـ Modals (Glassmorphism Effect) */
+.glass-panel {
+    background: rgba(30, 41, 59, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(51, 65, 85, 0.7);
+}
+
+/* أنيميشن الظهور السلس للتبويبات والـ Modal */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.nav-section {
+    animation: fadeIn 0.2s ease-out forwards;
+}
+
+#audit-modal,
+#service-modal,
+#user-modal {
+    animation: fadeIn 0.2s ease-out forwards;
+}

@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة إدارة العيادة | Multi-Tenant Doctor Control Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex">
+
+    <!-- LOGIN OVERLAY MODAL -->
+    <div id="login-modal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-8 max-w-sm w-full shadow-2xl text-right">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-2xl flex items-center justify-center text-3xl font-bold border border-emerald-500/30 mx-auto mb-3">
+                    🦷
+                </div>
+                <h2 class="text-xl font-extrabold text-white">تسجيل الدخول</h2>
+                <p class="text-xs text-slate-400 mt-1">لوحة تحكم إدارة العيادة الذكية</p>
+            </div>
+
+            <form onsubmit="handleLoginSubmit(event)" class="space-y-4 text-xs">
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">معرف العيادة (Clinic Slug)</label>
+                    <input type="text" id="login-clinic-slug" required value="main-clinic" placeholder="مثال: al-nour أو main-clinic" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">اسم المستخدم</label>
+                    <input type="text" id="login-username" required placeholder="admin / doctor / user" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">كلمة السر</label>
+                    <input type="password" id="login-password" required placeholder="••••••••" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500">
+                </div>
+                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl shadow-lg transition mt-2">
+                    دخول للنظام 🚀
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Sidebar Navigation -->
+    <aside class="w-64 bg-slate-800 border-l border-slate-700 p-6 flex flex-col justify-between shrink-0 hidden md:flex">
+        <div>
+            <!-- Brand -->
+            <div class="flex items-center gap-3 mb-8">
+                <div class="w-10 h-10 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center text-xl font-bold border border-emerald-500/30">
+                    🦷
+                </div>
+                <div>
+                    <h1 id="sidebar-clinic-name" class="text-base font-extrabold text-emerald-400 truncate max-w-[150px]">SmileCare Admin</h1>
+                    <p id="sidebar-clinic-slug" class="text-[10px] text-slate-400">إدارة العيادة الذكية</p>
+                </div>
+            </div>
+
+            <!-- Navigation Links -->
+            <nav class="space-y-2">
+                <button onclick="navSwitch('nav-today')" id="btn-nav-today" class="sidebar-btn active w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition">
+                    📅 قائمة الانتظار اليومية (Today)
+                </button>
+                <button onclick="navSwitch('nav-history')" id="btn-nav-history" class="sidebar-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition text-slate-400 hover:bg-slate-700/50 hover:text-white">
+                    📜 سجل كافة الحجوزات (History)
+                </button>
+                <button onclick="navSwitch('nav-patients')" id="btn-nav-patients" class="sidebar-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition text-slate-400 hover:bg-slate-700/50 hover:text-white">
+                    👥 المرضى والبلاك ليست
+                </button>
+                <button onclick="navSwitch('nav-services')" id="btn-nav-services" class="sidebar-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition text-slate-400 hover:bg-slate-700/50 hover:text-white">
+                    🩺 الخدمات والأسعار والعروض
+                </button>
+                <button onclick="navSwitch('nav-settings')" id="btn-nav-settings" class="sidebar-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition text-slate-400 hover:bg-slate-700/50 hover:text-white">
+                    ⚙️ إعدادات العيادة والسياسات
+                </button>
+                <button onclick="navSwitch('nav-users')" id="btn-nav-users" class="sidebar-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition text-slate-400 hover:bg-slate-700/50 hover:text-white">
+                    🔑 إدارة المستخدمين والحسابات
+                </button>
+            </nav>
+        </div>
+
+        <div class="text-[11px] text-slate-500 border-t border-slate-700/60 pt-4">
+            <p>SmileCare Multi-Tenant V1.0</p>
+            <p id="clinic-tz-info" class="mt-1 font-mono">Timezone: Africa/Cairo</p>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 p-4 md:p-8 overflow-y-auto">
+
+        <!-- Top Status Bar -->
+        <header class="flex justify-between items-center mb-6 bg-slate-800 p-4 rounded-2xl border border-slate-700">
+            <div class="flex items-center gap-3">
+                <span id="conn-badge" class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    🟢 النظام متصل
+                </span>
+                <span id="user-info-badge" class="px-3 py-1 rounded-full text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                    👤 <span id="current-user-display">غير مسجل</span>
+                </span>
+            </div>
+            <div class="flex items-center gap-2">
+                <button onclick="loadCurrentView()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2 rounded-xl text-xs transition shadow">
+                    🔄 تحديث
+                </button>
+                <button onclick="logoutUser()" class="bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-700 font-bold px-3 py-2 rounded-xl text-xs transition shadow">
+                    🚪 خروج
+                </button>
+            </div>
+        </header>
+
+        <!-- SECTION 1: TODAY'S APPOINTMENTS -->
+        <section id="nav-today" class="nav-section">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
+                <div>
+                    <div class="flex items-center gap-3">
+                        <h2 id="display-date-str" class="text-xl font-extrabold text-white">...</h2>
+                        <span id="working-day-badge" class="px-3 py-1 rounded-lg text-xs font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                            يوم عمل
+                        </span>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-1">تاريخ الحضور الفعلي للمرضى (Appointment Date)</p>
+                </div>
+
+                <div class="flex items-center gap-2">
+                    <button onclick="navigateWorkingDay('prev')" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-2 rounded-xl text-xs transition border border-slate-600 flex items-center gap-1">
+                        ⬅️ يوم العمل السابق
+                    </button>
+                    <button onclick="navigateWorkingDay('today')" class="bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600/50 font-bold px-3 py-2 rounded-xl text-xs transition border border-emerald-500/30">
+                        📅 اليوم
+                    </button>
+                    <button onclick="navigateWorkingDay('next')" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-2 rounded-xl text-xs transition border border-slate-600 flex items-center gap-1">
+                        يوم العمل التالي ➡️
+                    </button>
+                </div>
+            </div>
+
+            <div id="closed-banner" class="hidden bg-rose-950/40 border border-rose-700/60 p-4 rounded-2xl mb-6 flex justify-between items-center text-rose-200 text-xs font-bold">
+                <span>⚠️ العيادة مغلقة اليوم (عطلة رسمية).</span>
+                <button onclick="jumpToClosestWorkingDay()" class="underline text-emerald-400 hover:text-emerald-300">
+                    الانتقال لأقرب يوم عمل قادم 👉
+                </button>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-7 gap-3 mb-6">
+                <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700 text-center">
+                    <p class="text-[11px] text-slate-400">إجمالي اليوم</p>
+                    <h3 id="stat-total" class="text-xl font-black text-white mt-1">0</h3>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-2xl border border-blue-500/30 text-center">
+                    <p class="text-[11px] text-blue-400">معلق / قادم</p>
+                    <h3 id="stat-pending" class="text-xl font-black text-blue-400 mt-1">0</h3>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-2xl border border-purple-500/30 text-center">
+                    <p class="text-[11px] text-purple-400">وصل العيادة</p>
+                    <h3 id="stat-arrived" class="text-xl font-black text-purple-400 mt-1">0</h3>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-2xl border border-emerald-500/30 text-center">
+                    <p class="text-[11px] text-emerald-400">تم الكشف</p>
+                    <h3 id="stat-completed" class="text-xl font-black text-emerald-400 mt-1">0</h3>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-2xl border border-amber-500/30 text-center">
+                    <p class="text-[11px] text-amber-400">ملغي (Cancelled)</p>
+                    <h3 id="stat-cancelled" class="text-xl font-black text-amber-400 mt-1">0</h3>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-2xl border border-rose-500/30 text-center">
+                    <p class="text-[11px] text-rose-400">غائب (No Show)</p>
+                    <h3 id="stat-noshow" class="text-xl font-black text-rose-400 mt-1">0</h3>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-2xl border border-slate-600 text-center">
+                    <p class="text-[11px] text-slate-400">السعة المتبقية</p>
+                    <h3 id="stat-capacity" class="text-xl font-black text-emerald-400 mt-1">0 / 0</h3>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-x-auto shadow-xl">
+                <div class="p-4 border-b border-slate-700/80 flex justify-between items-center">
+                    <h3 class="text-xs font-bold text-slate-300">📋 الحالات المنتظرة والنشطة اليوم</h3>
+                    <label class="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer">
+                        <input type="checkbox" id="show-completed-toggle" onchange="renderDailyTable()" class="rounded border-slate-700 text-emerald-500">
+                        إظهار الحالات المنتهية
+                    </label>
+                </div>
+                <table class="w-full text-right text-xs text-slate-300">
+                    <thead class="bg-slate-900 text-slate-400 uppercase border-b border-slate-700">
+                        <tr>
+                            <th class="p-4">اسم المريض</th>
+                            <th class="p-4">رقم الهاتف</th>
+                            <th class="p-4">الخدمة</th>
+                            <th class="p-4">السعر وتفاصيل الحجز</th>
+                            <th class="p-4">تاريخ الحضور</th>
+                            <th class="p-4">وقت الحجز</th>
+                            <th class="p-4">الحالة</th>
+                            <th class="p-4 text-center">الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="today-tbody" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- SECTION 2: APPOINTMENT HISTORY -->
+        <section id="nav-history" class="nav-section hidden">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6">
+                <h2 class="text-lg font-bold text-white mb-4">📜 سجل الحجوزات المتقدم (Appointment History)</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4">
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">من تاريخ (Date From)</label>
+                        <input id="hist-date-from" type="date" onchange="fetchHistory()" class="w-full bg-slate-900 border border-slate-700 text-xs px-3 py-2 rounded-xl text-slate-200">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">إلى تاريخ (Date To)</label>
+                        <input id="hist-date-to" type="date" onchange="fetchHistory()" class="w-full bg-slate-900 border border-slate-700 text-xs px-3 py-2 rounded-xl text-slate-200">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">التاريخ المعتمد للفلترة</label>
+                        <select id="hist-date-type" onchange="fetchHistory()" class="w-full bg-slate-900 border border-slate-700 text-xs px-3 py-2 rounded-xl text-slate-200">
+                            <option value="appointment_date">تاريخ الزيارة (Appointment Date)</option>
+                            <option value="booked_at">تاريخ إنشاء الحجز (Booking Date)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">تصفية بالحالة</label>
+                        <select id="hist-status" onchange="fetchHistory()" class="w-full bg-slate-900 border border-slate-700 text-xs px-3 py-2 rounded-xl text-slate-200">
+                            <option value="all">كافة الحالات</option>
+                            <option value="pending">معلق / قادم</option>
+                            <option value="arrived">وصل العيادة (Arrived)</option>
+                            <option value="completed">مكتمل (Completed)</option>
+                            <option value="cancelled">ملغي (Cancelled)</option>
+                            <option value="no_show">عدم حضور (No Show)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">بحث</label>
+                        <input id="hist-search" type="text" oninput="fetchHistory()" placeholder="بحث بالاسم أو الهاتف..." class="w-full bg-slate-900 border border-slate-700 text-xs px-3 py-2 rounded-xl text-slate-200">
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-x-auto shadow-xl">
+                <table class="w-full text-right text-xs text-slate-300">
+                    <thead class="bg-slate-900 text-slate-400 uppercase border-b border-slate-700">
+                        <tr>
+                            <th class="p-4">اسم المريض</th>
+                            <th class="p-4">رقم الهاتف</th>
+                            <th class="p-4">الخدمة</th>
+                            <th class="p-4">السعر وتفاصيل الحجز</th>
+                            <th class="p-4">تاريخ الزيارة</th>
+                            <th class="p-4">تاريخ إنشاء الحجز</th>
+                            <th class="p-4">الحالة</th>
+                            <th class="p-4 text-center">الـ Audit Log</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-tbody" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- SECTION 3: PATIENTS & BLACKLIST -->
+        <section id="nav-patients" class="nav-section hidden">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6">
+                <h2 class="text-lg font-bold text-rose-400">إدارة البلاك ليست والمحظورين</h2>
+            </div>
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-x-auto shadow-xl">
+                <table class="w-full text-right text-xs text-slate-300">
+                    <thead class="bg-slate-900 text-slate-400 uppercase border-b border-slate-700">
+                        <tr>
+                            <th class="p-4">اسم المريض</th>
+                            <th class="p-4">رقم الهاتف</th>
+                            <th class="p-4">مرات عدم الحضور</th>
+                            <th class="p-4">الحالة</th>
+                            <th class="p-4 text-center">التحكم</th>
+                        </tr>
+                    </thead>
+                    <tbody id="patients-tbody" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- SECTION 4: SERVICES & OFFERS MANAGEMENT -->
+        <section id="nav-services" class="nav-section hidden">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6 flex justify-between items-center">
+                <div>
+                    <h2 class="text-lg font-bold text-white">🩺 إدارة الخدمات والأسعار والعروض</h2>
+                    <p class="text-xs text-slate-400 mt-0.5">إضافة خدمات جديدة، تغيير الأسعار، وعمل خصومات وعروض لمرضى العيادة</p>
+                </div>
+                <button onclick="openServiceModal()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition shadow flex items-center gap-2">
+                    ➕ إضافة خدمة جديدة
+                </button>
+            </div>
+
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-x-auto shadow-xl">
+                <table class="w-full text-right text-xs text-slate-300">
+                    <thead class="bg-slate-900 text-slate-400 uppercase border-b border-slate-700">
+                        <tr>
+                            <th class="p-4">اسم الخدمة / العرض</th>
+                            <th class="p-4">تفاصيل / وصف العرض</th>
+                            <th class="p-4">السعر الحالي</th>
+                            <th class="p-4">المدة المتوقعة</th>
+                            <th class="p-4">الحالة</th>
+                            <th class="p-4 text-center">إجراءات التحكم</th>
+                        </tr>
+                    </thead>
+                    <tbody id="services-tbody" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- SECTION 5: CLINIC SETTINGS -->
+        <section id="nav-settings" class="nav-section hidden">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6">
+                <h2 class="text-lg font-bold text-white mb-1">⚙️ إعدادات العيادة وسياستها الحاكمة</h2>
+                <p class="text-xs text-slate-400">تعديل أيام وساعات العمل الرسمية، السعة اليومية، وسياسة الحظر المتدرج للغائبين (No-Show Policy)</p>
+            </div>
+
+            <form onsubmit="saveClinicSettings(event)" class="space-y-6">
+                <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl space-y-4">
+                    <h3 class="text-sm font-bold text-emerald-400 border-b border-slate-700 pb-2">📅 أيام وساعات العمل والسعة اليومية</h3>
+                    
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 mb-2">أيام العمل المتاحة للحجز:</label>
+                        <div class="grid grid-cols-2 md:grid-cols-7 gap-2 text-xs">
+                            <label class="flex items-center gap-2 p-2.5 bg-slate-900 rounded-xl border border-slate-700/70 cursor-pointer">
+                                <input type="checkbox" name="cfg-working-day" value="5" class="rounded text-emerald-500"> السبت
+                            </label>
+                            <label class="flex items-center gap-2 p-2.5 bg-slate-900 rounded-xl border border-slate-700/70 cursor-pointer">
+                                <input type="checkbox" name="cfg-working-day" value="6" class="rounded text-emerald-500"> الأحد
+                            </label>
+                            <label class="flex items-center gap-2 p-2.5 bg-slate-900 rounded-xl border border-slate-700/70 cursor-pointer">
+                                <input type="checkbox" name="cfg-working-day" value="0" class="rounded text-emerald-500"> الإثنين
+                            </label>
+                            <label class="flex items-center gap-2 p-2.5 bg-slate-900 rounded-xl border border-slate-700/70 cursor-pointer">
+                                <input type="checkbox" name="cfg-working-day" value="1" class="rounded text-emerald-500"> الثلاثاء
+                            </label>
+                            <label class="flex items-center gap-2 p-2.5 bg-slate-900 rounded-xl border border-slate-700/70 cursor-pointer">
+                                <input type="checkbox" name="cfg-working-day" value="2" class="rounded text-emerald-500"> الأربعاء
+                            </label>
+                            <label class="flex items-center gap-2 p-2.5 bg-slate-900 rounded-xl border border-slate-700/70 cursor-pointer">
+                                <input type="checkbox" name="cfg-working-day" value="3" class="rounded text-emerald-500"> الخميس
+                            </label>
+                            <label class="flex items-center gap-2 p-2.5 bg-slate-900 rounded-xl border border-slate-700/70 cursor-pointer">
+                                <input type="checkbox" name="cfg-working-day" value="4" class="rounded text-emerald-500"> الجمعة
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">وقت بدء العمل (من) ⏰</label>
+                            <input type="time" id="cfg-opening-time" value="16:00" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">وقت انتهاء العمل (إلى) ⏰</label>
+                            <input type="time" id="cfg-closing-time" value="22:00" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">السعة القصوى اليومية 👥</label>
+                            <input type="number" id="cfg-daily-capacity" min="1" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">التوقيت المعتمد (Timezone)</label>
+                            <input type="text" id="cfg-timezone" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tiered Ban Policy Panel -->
+                <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl space-y-4">
+                    <h3 class="text-sm font-bold text-rose-400 border-b border-slate-700 pb-2">🚫 سياسة الحظر المتدرج للغائبين (Tiered Ban Policy)</h3>
+                    <p class="text-[11px] text-slate-400">حدد عدد أيام الحظر التلقائي عند تسجيل الغياب المباشر للمريض من الداشبورد:</p>
+
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
+                        <div class="p-3 bg-slate-900 rounded-xl border border-slate-700">
+                            <label class="block text-slate-300 font-bold mb-1">أول غياب (المرة الأولى)</label>
+                            <input type="number" id="cfg-ban-1" min="0" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono">
+                            <span class="text-[10px] text-slate-500 mt-1 block">0 = تسجيل بدون حظر (إنذار)</span>
+                        </div>
+                        <div class="p-3 bg-slate-900 rounded-xl border border-slate-700">
+                            <label class="block text-slate-300 font-bold mb-1">الغياب الثاني</label>
+                            <input type="number" id="cfg-ban-2" min="0" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono">
+                            <span class="text-[10px] text-slate-500 mt-1 block">عدد أيام الحظر المؤقت</span>
+                        </div>
+                        <div class="p-3 bg-slate-900 rounded-xl border border-slate-700">
+                            <label class="block text-slate-300 font-bold mb-1">الغياب الثالث</label>
+                            <input type="number" id="cfg-ban-3" min="0" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono">
+                            <span class="text-[10px] text-slate-500 mt-1 block">عدد أيام الحظر</span>
+                        </div>
+                        <div class="p-3 bg-slate-900 rounded-xl border border-slate-700">
+                            <label class="block text-slate-300 font-bold mb-1">الغياب الرابع فأكثر (تكرار)</label>
+                            <input type="number" id="cfg-ban-4" min="0" required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono">
+                            <span class="text-[10px] text-slate-500 mt-1 block">حظر رئيسي (بلاك ليست)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex justify-end">
+                    <button type="submit" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-6 py-3 rounded-xl text-xs transition shadow-lg flex items-center gap-2">
+                        حفظ جميع الإعدادات والسياسات 💾
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <!-- SECTION 6: USER MANAGEMENT -->
+        <section id="nav-users" class="nav-section hidden">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6 flex justify-between items-center">
+                <div>
+                    <h2 class="text-lg font-bold text-white">🔑 إدارة مستخدمي النظام والحسابات</h2>
+                    <p class="text-xs text-slate-400 mt-0.5">التحكم في حسابات الموظفين والأطباء، تغيير كلمات السر وتحديد الصلاحيات</p>
+                </div>
+                <button onclick="openUserModal()" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition shadow flex items-center gap-2">
+                    ➕ إضافة مستخدم جديد
+                </button>
+            </div>
+
+            <div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-x-auto shadow-xl">
+                <table class="w-full text-right text-xs text-slate-300">
+                    <thead class="bg-slate-900 text-slate-400 uppercase border-b border-slate-700">
+                        <tr>
+                            <th class="p-4">الاسم بالكامل</th>
+                            <th class="p-4">اسم المستخدم (Username)</th>
+                            <th class="p-4">الرتبة / الصلاحية</th>
+                            <th class="p-4">الحالة</th>
+                            <th class="p-4 text-center">إجراءات التحكم</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-tbody" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Modals -->
+    <div id="audit-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 max-w-lg w-full shadow-2xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-bold text-emerald-400 text-sm">📜 سجل عمليات الحجز (Audit Trail)</h3>
+                <button onclick="closeAuditModal()" class="text-slate-400 hover:text-white font-bold">✕</button>
+            </div>
+            <div id="audit-timeline" class="space-y-3 max-h-80 overflow-y-auto p-2 border border-slate-700/60 rounded-xl bg-slate-900"></div>
+        </div>
+    </div>
+
+    <div id="service-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <div class="flex justify-between items-center mb-4 border-b border-slate-700 pb-3">
+                <h3 id="service-modal-title" class="font-bold text-emerald-400 text-sm">➕ إضافة خدمة / عرض جديد</h3>
+                <button onclick="closeServiceModal()" class="text-slate-400 hover:text-white font-bold">✕</button>
+            </div>
+            
+            <form id="service-form" onsubmit="saveService(event)" class="space-y-4 text-xs">
+                <input type="hidden" id="service-id">
+                
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">اسم الخدمة أو العرض *</label>
+                    <input type="text" id="service-name" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                </div>
+
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">تفاصيل أو وصف العرض</label>
+                    <textarea id="service-description" rows="2" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white"></textarea>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-300 font-bold mb-1">السعر (ج.م) *</label>
+                        <input type="number" id="service-price" step="0.01" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-slate-300 font-bold mb-1">المدة (بالدقائق) *</label>
+                        <input type="number" id="service-duration" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-2 pt-3 border-t border-slate-700">
+                    <button type="button" onclick="closeServiceModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-bold">إلغاء</button>
+                    <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold shadow">حفظ الخدمة 💾</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- CREATE USER MODAL -->
+    <div id="user-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <div class="flex justify-between items-center mb-4 border-b border-slate-700 pb-3">
+                <h3 class="font-bold text-blue-400 text-sm">➕ إضافة مستخدم جديد</h3>
+                <button onclick="closeUserModal()" class="text-slate-400 hover:text-white font-bold">✕</button>
+            </div>
+
+            <form id="user-form" onsubmit="saveNewUser(event)" class="space-y-4 text-xs">
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">الاسم بالكامل *</label>
+                    <input type="text" id="new-user-fullname" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">اسم المستخدم (Username) *</label>
+                    <input type="text" id="new-user-username" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">كلمة السر *</label>
+                    <input type="password" id="new-user-password" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-bold mb-1">الرتبة / الصلاحية *</label>
+                    <select id="new-user-role" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                        <option value="RECEPTIONIST">موظف استقبال (RECEPTIONIST)</option>
+                        <option value="DOCTOR">طبيب (DOCTOR)</option>
+                        <option value="ADMIN">مدير نظام (ADMIN)</option>
+                    </select>
+                </div>
+
+                <div class="flex justify-end gap-2 pt-3 border-t border-slate-700">
+                    <button type="button" onclick="closeUserModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-bold">إلغاء</button>
+                    <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold shadow">إنشاء الحساب 💾</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        // 1. التحقق من حالة الجلسة عند تحميل الصفحة
+        document.addEventListener("DOMContentLoaded", () => {
+            const token = localStorage.getItem("access_token");
+            const userName = localStorage.getItem("user_name");
+            const userRole = localStorage.getItem("user_role");
+            const clinicName = localStorage.getItem("clinic_name");
+            const clinicSlug = localStorage.getItem("clinic_slug");
+
+            if (!token) {
+                document.getElementById("login-modal").classList.remove("hidden");
+                document.getElementById("login-modal").classList.add("flex");
+            } else {
+                document.getElementById("login-modal").classList.add("hidden");
+                if (userName) {
+                    document.getElementById("current-user-display").innerText = `${userName} (${userRole || 'Admin'})`;
+                }
+                if (clinicName) {
+                    document.getElementById("sidebar-clinic-name").innerText = clinicName;
+                }
+                if (clinicSlug) {
+                    document.getElementById("sidebar-clinic-slug").innerText = `معرف: ${clinicSlug}`;
+                }
+            }
+        });
+
+        // 2. معالجة تسجيل الدخول وإرسال معرف العيادة (Slug)
+        async function handleLoginSubmit(e) {
+            e.preventDefault();
+            const clinicSlug = document.getElementById("login-clinic-slug").value.trim() || "main-clinic";
+            const username = document.getElementById("login-username").value.trim();
+            const password = document.getElementById("login-password").value.trim();
+
+            try {
+                const res = await fetch("/api/v1/auth/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        clinic_slug: clinicSlug,
+                        username: username,
+                        password: password
+                    })
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    alert(data.detail || "اسم المستخدم أو كلمة المرور أو معرف العيادة غير صحيح.");
+                    return;
+                }
+
+                // حفظ بيانات الجلسة والعيادة
+                localStorage.setItem("access_token", data.access_token);
+                localStorage.setItem("user_name", data.full_name);
+                localStorage.setItem("user_role", data.role);
+                localStorage.setItem("clinic_id", data.clinic_id);
+                localStorage.setItem("clinic_name", data.clinic_name);
+                localStorage.setItem("clinic_slug", clinicSlug);
+
+                // إغلاق المودال وتحديث الواجهة
+                document.getElementById("login-modal").classList.add("hidden");
+                document.getElementById("login-modal").classList.remove("flex");
+                window.location.reload();
+            } catch (err) {
+                alert("تعذر الاتصال بالخادم، يرجى التأكد من تشغيل الباك إند.");
+            }
+        }
+
+        function logoutUser() {
+            localStorage.clear();
+            window.location.reload();
+        }
+
+        function openUserModal() {
+            document.getElementById('user-modal').classList.remove('hidden');
+            document.getElementById('user-modal').classList.add('flex');
+        }
+
+        function closeUserModal() {
+            document.getElementById('user-modal').classList.add('hidden');
+            document.getElementById('user-modal').classList.remove('flex');
+        }
+
+        async function saveNewUser(e) {
+            e.preventDefault();
+            const fullName = document.getElementById('new-user-fullname').value.trim();
+            const username = document.getElementById('new-user-username').value.trim();
+            const password = document.getElementById('new-user-password').value.trim();
+            const role = document.getElementById('new-user-role').value;
+
+            try {
+                const res = await adminFetch(`/api/v1/admin/users`, {
+                    method: 'POST',
+                    body: JSON.stringify({ full_name: fullName, username, password, role })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(data.message || "تم إنشاء المستخدم بنجاح.");
+                    closeUserModal();
+                    if (typeof fetchUsers === "function") fetchUsers();
+                } else {
+                    alert(data.detail || "حدث خطأ أثناء إنشاء المستخدم.");
+                }
+            } catch (err) {
+                alert("تعذر الاتصال بالخادم.");
+            }
+        }
+    </script>
+</body>
+</html>

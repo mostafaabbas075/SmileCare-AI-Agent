@@ -36,6 +36,14 @@ class ChatRequest(AppBaseModel):
         max_length=4096,
         description="The user's latest message.",
     )
+    clinic_slug: str | None = Field(
+        default=None,
+        description="Clinic unique slug (e.g. al-nour or white)",
+    )
+    clinic_id: str | None = Field(
+        default=None,
+        description="Clinic UUID identifier",
+    )
 
 
 class ChatResponse(AppBaseModel):
@@ -44,6 +52,7 @@ class ChatResponse(AppBaseModel):
     session_id: str = Field(description="Echoed session ID.")
     message: str = Field(description="AI assistant reply.")
     role: MessageRole = Field(default=MessageRole.ASSISTANT)
+    clinic_slug: str | None = Field(default=None, description="Clinic slug that answered.")
     timestamp: datetime = Field(description="Server-side timestamp of the response.")
 
 

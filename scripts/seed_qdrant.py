@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Disable HuggingFace tokenizers parallelism warning
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -11,11 +12,18 @@ from langchain_qdrant import QdrantVectorStore
 
 # Define paths based on the project structure
 CURRENT_DIR = Path(__file__).resolve().parent
-KB_DIR = CURRENT_DIR.parent / "knowledge_base"
+PROJECT_ROOT = CURRENT_DIR.parent
+KB_DIR = PROJECT_ROOT / "knowledge_base"
+ENV_PATH = PROJECT_ROOT / "backend" / ".env"
 
-# Qdrant Database URL
-QDRANT_URL = "http://localhost:6333"
-COLLECTION_NAME = "clinic_knowledge"
+# Load environment variables from backend/.env
+load_dotenv(dotenv_path=ENV_PATH)
+
+# Fetch Qdrant Cloud settings from environment
+QDRANT_URL = os.getenv("QDRANT_HOST") or os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
+COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "dental_knowledge")
+
 
 def seed_vector_db():
     print("🧠 1. Loading AI Embedding Model (all-MiniLM-L6-v2)...")
@@ -31,16 +39,17 @@ def seed_vector_db():
     chunks = text_splitter.split_documents(docs)
     print(f"   -> Created {len(chunks)} chunks.")
 
-    print("🚀 4. Uploading chunks to Qdrant Vector Database...")
+    print(f"🚀 4. Uploading chunks to Qdrant Cloud ({COLLECTION_NAME})...")
     QdrantVectorStore.from_documents(
         chunks,
         embeddings,
         url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
         collection_name=COLLECTION_NAME,
         force_recreate=True
     )
     
-    print("\n🎉 Knowledge Base successfully embedded and saved to Qdrant!")
+    print("\n🎉 Knowledge Base successfully embedded and saved to Qdrant Cloud!")
 
 if __name__ == "__main__":
     try:

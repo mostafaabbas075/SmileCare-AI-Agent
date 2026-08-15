@@ -11,18 +11,29 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.v1.routers.admin import router as admin_router
 from app.api.v1.routers.appointments import router as appointments_router
+from app.api.v1.routers.auth import router as auth_router
 from app.api.v1.routers.chat import router as chat_router
 from app.api.v1.routers.doctors import router as doctors_router
 from app.api.v1.routers.documents import router as documents_router
 from app.api.v1.routers.patients import router as patients_router
 from app.api.v1.routers.services import router as services_router
+from app.api.v1.routers.users import router as users_router
+from app.api.v1.routers.clinic import router as clinic_router
+from app.api.v1.routers.onboarding import router as onboarding_router
+
 
 router = APIRouter()
 
+router.include_router(auth_router)
+router.include_router(users_router)
 router.include_router(patients_router)
 router.include_router(doctors_router)
 router.include_router(services_router)
 router.include_router(appointments_router)
 router.include_router(chat_router)
 router.include_router(documents_router)
+router.include_router(admin_router)
+router.include_router(clinic_router)
+router.include_router(onboarding_router)

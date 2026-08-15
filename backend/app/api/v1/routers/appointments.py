@@ -1,15 +1,17 @@
 """
 Appointments router.
 
-Provides endpoints for booking, viewing, rescheduling, and cancelling
-appointments. Includes both a flat response and a detailed (nested) response.
+Provides endpoints for booking, viewing, rescheduling, cancelling,
+and marking appointments as NO_SHOW (enforcing Policy V1 penalty escalation).
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query, status
+import structlog
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.database import get_db
@@ -22,6 +24,8 @@ from app.schemas.appointment import (
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.services.appointment_service import appointment_service
 from app.utils.pagination import PaginationDep
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/appointments", tags=["Appointments"])
 
@@ -77,11 +81,26 @@ async def get_appointment(
     summary="Book a new appointment",
 )
 async def book_appointment(
+    request: Request,
     data: AppointmentCreate,
     db: AsyncSession = Depends(get_db),
 ) -> AppointmentResponse:
-    """Book a new appointment. Validates slot availability before creating."""
+    """Book a new appointment. Validates capacity and Policy V1 limits."""
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+
     appointment = await appointment_service.book_appointment(db, data)
+
+    logger.info(
+        "audit_booking_created",
+        appointment_id=str(appointment.id),
+        patient_id=str(appointment.patient_id),
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="BOOK_APPOINTMENT",
+        timestamp=datetime.now(UTC).isoformat(),
+    )
+
     return AppointmentResponse.model_validate(appointment)
 
 
@@ -89,15 +108,29 @@ async def book_appointment(
     "/{appointment_id}",
     response_model=AppointmentResponse,
     summary="Update / reschedule an appointment",
-    description="Update appointment fields. Status transitions are validated against allowed life-cycle rules.",
+    description="Update appointment fields. Status transitions and daily edit limits are validated.",
 )
 async def update_appointment(
+    request: Request,
     appointment_id: uuid.UUID,
     data: AppointmentUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> AppointmentResponse:
     """Apply a partial update to an appointment (reschedule, change status, etc.)."""
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+
     appointment = await appointment_service.update_appointment(db, appointment_id, data)
+
+    logger.info(
+        "audit_booking_updated",
+        appointment_id=str(appointment_id),
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="UPDATE_APPOINTMENT",
+        timestamp=datetime.now(UTC).isoformat(),
+    )
+
     return AppointmentResponse.model_validate(appointment)
 
 
@@ -105,12 +138,55 @@ async def update_appointment(
     "/{appointment_id}/cancel",
     response_model=AppointmentResponse,
     summary="Cancel an appointment",
-    description="Convenience endpoint to cancel an appointment without needing to send the full update payload.",
+    description="Convenience endpoint to cancel an appointment. Enforces daily cancellation limits and cooldown.",
 )
 async def cancel_appointment(
+    request: Request,
     appointment_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> AppointmentResponse:
     """Cancel an active appointment."""
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+
     appointment = await appointment_service.cancel_appointment(db, appointment_id)
+
+    logger.info(
+        "audit_booking_cancelled",
+        appointment_id=str(appointment_id),
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="CANCEL_APPOINTMENT",
+        timestamp=datetime.now(UTC).isoformat(),
+    )
+
+    return AppointmentResponse.model_validate(appointment)
+
+
+@router.post(
+    "/{appointment_id}/no-show",
+    response_model=AppointmentResponse,
+    summary="Mark appointment as NO_SHOW",
+    description="Used by clinic staff when a patient fails to show up. Applies progressive ban penalties (7 days, 30 days, Blacklist).",
+)
+async def mark_no_show(
+    request: Request,
+    appointment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> AppointmentResponse:
+    """Mark an appointment as NO_SHOW and apply escalation penalties."""
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+
+    appointment = await appointment_service.mark_no_show(db, appointment_id)
+
+    logger.info(
+        "audit_booking_no_show",
+        appointment_id=str(appointment_id),
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="MARK_NO_SHOW",
+        timestamp=datetime.now(UTC).isoformat(),
+    )
+
     return AppointmentResponse.model_validate(appointment)
