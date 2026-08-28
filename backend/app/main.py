@@ -54,7 +54,7 @@ logger = structlog.get_logger(__name__)
 
 limiter = Limiter(
     key_func=get_remote_address,
-    default_limits=["100/10minutes"],  # معدل متزن ومناسب للشات
+    default_limits=["100/10minutes"],
 )
 
 
@@ -73,7 +73,7 @@ async def _auto_seed_first_admin() -> None:
             # 1. فحص وجود العيادة الافتراضية
             stmt_clinic = select(Clinic).where(Clinic.slug == "main-clinic")
             res_clinic = await db.execute(stmt_clinic)
-            clinic = res_clinic.scalar_one_or_none()
+            clinic = res_clinic.scalars().first()
 
             if not clinic:
                 clinic = Clinic(
@@ -86,10 +86,10 @@ async def _auto_seed_first_admin() -> None:
                 db.add(clinic)
                 await db.flush()
 
-            # 2. فحص وجود حساب أدمن
-            stmt = select(User).where(User.role == UserRole.ADMIN)
+            # 2. فحص وجود حساب أدمن باسم المستخدم المحدد
+            stmt = select(User).where(User.username == settings.ADMIN_USERNAME)
             res = await db.execute(stmt)
-            existing_admin = res.scalar_one_or_none()
+            existing_admin = res.scalars().first()
 
             if not existing_admin:
                 first_admin = User(
@@ -159,7 +159,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description="AI-powered multi-tenant virtual receptionist and administration system.",
-        docs_url=None if is_prod else "/docs",  # إخفاء الـ Docs في الإنتاج لحماية الباك إند
+        docs_url=None if is_prod else "/docs",
         redoc_url=None if is_prod else "/redoc",
         openapi_url=None if is_prod else "/openapi.json",
         lifespan=lifespan,
@@ -186,7 +186,6 @@ def create_app() -> FastAPI:
 def _register_middleware(app: FastAPI) -> None:
     """Attach all middleware to the application."""
 
-    # 1. إعدادات CORS المتوافقة مع الإنتاج والمحلي
     allowed_origins = getattr(
         settings,
         "CORS_ORIGINS",
@@ -200,14 +199,14 @@ def _register_middleware(app: FastAPI) -> None:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allowed_origins if isinstance(allowed_origins, list) else ["*"],
-        allow_origin_regex=r"https://.*\.vercel\.app" if allowed_origins == ["*"] else None,
+        allow_origins=allowed_origins if isinstance(allowed_origins, list) else [],
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|https://.*\.vercel\.app",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    # 2. Structured Request Logging & Request-ID
+    # Structured Request Logging & Request-ID
     @app.middleware("http")
     async def logging_middleware(request: Request, call_next: object) -> object:
         request_id = str(uuid.uuid4())
