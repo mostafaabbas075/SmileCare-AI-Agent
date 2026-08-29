@@ -1,55 +1,51 @@
-"""
-Abstract embedder base class.
-
-Defines the interface all embedding implementations must satisfy.
-The default implementation will use Sentence Transformers, but this
-abstraction allows swapping to OpenAI embeddings, Vertex AI, etc.
-without touching any RAG or agent code.
-
-When implementing the real embedder:
-
-    class SentenceTransformerEmbedder(BaseEmbedder):
-        def __init__(self, model_name: str) -> None:
-            self._model = SentenceTransformer(model_name)
-
-        async def embed(self, texts: list[str]) -> list[list[float]]:
-            return self._model.encode(texts).tolist()
-"""
-
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+import os
+import asyncio
+from google import genai
+from google.genai import types
+
+from .base import BaseEmbedder  # تأكد من مسار الاستيراد الصحيح لـ BaseEmbedder
 
 
-class BaseEmbedder(ABC):
-    """Abstract interface for text embedding providers."""
+class GeminiEmbedder(BaseEmbedder):
+    """Google Gemini Text Embeddings implementation."""
 
-    @abstractmethod
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a list of texts.
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str = "text-embedding-004",
+    ) -> None:
+        key = api_key or os.getenv("GEMINI_API_KEY")
+        if not key:
+            raise ValueError("GEMINI_API_KEY must be provided or set in environment variables.")
 
-        Args:
-            texts: One or more text strings to embed.
-
-        Returns:
-            A list of float vectors, one per input text.
-            All vectors must have the same dimension.
-        """
-        ...
-
-    @abstractmethod
-    async def embed_single(self, text: str) -> list[float]:
-        """Generate an embedding for a single text string.
-
-        Convenience wrapper around ``embed()`` for the common single-query case.
-        """
-        ...
+        self.client = genai.Client(api_key=key)
+        self.model_name = model_name
+        self._dimension = 768  # أبعاد مخرجات text-embedding-004
 
     @property
-    @abstractmethod
     def dimension(self) -> int:
-        """Return the embedding vector dimension.
+        return self._dimension
 
-        Used when creating or verifying the Qdrant collection schema.
-        """
-        ...
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings for a list of texts asynchronously."""
+        if not texts:
+            return []
+
+        # تشغيل طلب الـ API داخل Thread pool لعدم تعطيل الـ Event Loop
+        response = await asyncio.to_thread(
+            self.client.models.embed_content,
+            model=self.model_name,
+            contents=texts,
+        )
+        return [e.values for e in response.embeddings]
+
+    async def embed_single(self, text: str) -> list[float]:
+        """Generate an embedding for a single text string."""
+        response = await asyncio.to_thread(
+            self.client.models.embed_content,
+            model=self.model_name,
+            contents=text,
+        )
+        return response.embeddings[0].values

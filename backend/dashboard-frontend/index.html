@@ -24,7 +24,7 @@
             <form onsubmit="handleLoginSubmit(event)" class="space-y-4 text-xs">
                 <div>
                     <label class="block text-slate-300 font-bold mb-1">معرف العيادة (Clinic Slug)</label>
-                    <input type="text" id="login-clinic-slug" required value="main-clinic" placeholder="مثال: al-nour أو main-clinic" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500">
+                    <input type="text" id="login-clinic-slug" required value="al-noor11" placeholder="مثال: al-noor11" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500">
                 </div>
                 <div>
                     <label class="block text-slate-300 font-bold mb-1">اسم المستخدم</label>
@@ -520,76 +520,21 @@
 
     <script src="app.js"></script>
     <script>
-        // 1. التحقق من حالة الجلسة عند تحميل الصفحة
         document.addEventListener("DOMContentLoaded", () => {
             const token = localStorage.getItem("access_token");
-            const userName = localStorage.getItem("user_name");
-            const userRole = localStorage.getItem("user_role");
-            const clinicName = localStorage.getItem("clinic_name");
-            const clinicSlug = localStorage.getItem("clinic_slug");
-
             if (!token) {
-                document.getElementById("login-modal").classList.remove("hidden");
-                document.getElementById("login-modal").classList.add("flex");
+                showLoginModal();
             } else {
-                document.getElementById("login-modal").classList.add("hidden");
-                if (userName) {
-                    document.getElementById("current-user-display").innerText = `${userName} (${userRole || 'Admin'})`;
-                }
-                if (clinicName) {
-                    document.getElementById("sidebar-clinic-name").innerText = clinicName;
-                }
-                if (clinicSlug) {
-                    document.getElementById("sidebar-clinic-slug").innerText = `معرف: ${clinicSlug}`;
-                }
+                loadCurrentView();
             }
         });
 
-        // 2. معالجة تسجيل الدخول وإرسال معرف العيادة (Slug)
         async function handleLoginSubmit(e) {
             e.preventDefault();
-            const clinicSlug = document.getElementById("login-clinic-slug").value.trim() || "main-clinic";
+            const clinicSlug = document.getElementById("login-clinic-slug").value.trim() || "al-noor11";
             const username = document.getElementById("login-username").value.trim();
             const password = document.getElementById("login-password").value.trim();
-
-            try {
-                const res = await fetch("/api/v1/auth/login", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        clinic_slug: clinicSlug,
-                        username: username,
-                        password: password
-                    })
-                });
-
-                const data = await res.json();
-
-                if (!res.ok) {
-                    alert(data.detail || "اسم المستخدم أو كلمة المرور أو معرف العيادة غير صحيح.");
-                    return;
-                }
-
-                // حفظ بيانات الجلسة والعيادة
-                localStorage.setItem("access_token", data.access_token);
-                localStorage.setItem("user_name", data.full_name);
-                localStorage.setItem("user_role", data.role);
-                localStorage.setItem("clinic_id", data.clinic_id);
-                localStorage.setItem("clinic_name", data.clinic_name);
-                localStorage.setItem("clinic_slug", clinicSlug);
-
-                // إغلاق المودال وتحديث الواجهة
-                document.getElementById("login-modal").classList.add("hidden");
-                document.getElementById("login-modal").classList.remove("flex");
-                window.location.reload();
-            } catch (err) {
-                alert("تعذر الاتصال بالخادم، يرجى التأكد من تشغيل الباك إند.");
-            }
-        }
-
-        function logoutUser() {
-            localStorage.clear();
-            window.location.reload();
+            await loginUser(username, password, clinicSlug);
         }
 
         function openUserModal() {
@@ -610,7 +555,7 @@
             const role = document.getElementById('new-user-role').value;
 
             try {
-                const res = await adminFetch(`/api/v1/admin/users`, {
+                const res = await adminFetch(`${API_BASE}/admin/users`, {
                     method: 'POST',
                     body: JSON.stringify({ full_name: fullName, username, password, role })
                 });

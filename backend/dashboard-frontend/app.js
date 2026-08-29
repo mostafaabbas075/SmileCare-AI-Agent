@@ -1,4 +1,6 @@
-const API_BASE = "http://127.0.0.1:8000/api/v1";
+const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+    ? "http://127.0.0.1:8000/api/v1"
+    : "https://smilecare-ai-agent.fastapicloud.dev/api/v1";
 
 let currentNav = 'nav-today';
 let dailyData = null;
@@ -48,7 +50,7 @@ function showLoginModal() {
     }
 }
 
-async function loginUser(username, password, clinicSlug = 'main-clinic') {
+async function loginUser(username, password, clinicSlug = 'al-noor11') {
     try {
         const res = await fetch(`${API_BASE}/auth/login`, {
             method: 'POST',
@@ -119,7 +121,6 @@ function loadCurrentView() {
         return;
     }
 
-    // تحديث بيانات الهوية في الشريط العلوي والجانبي
     const clinicName = localStorage.getItem("clinic_name");
     const clinicSlug = localStorage.getItem("clinic_slug");
     const userName = localStorage.getItem("user_name");
@@ -798,13 +799,11 @@ async function fetchClinicSettings() {
         if (!res.ok) return;
         const cfg = await res.json();
 
-        // أيام العمل
         const checkboxes = document.querySelectorAll('input[name="cfg-working-day"]');
         checkboxes.forEach(cb => {
             cb.checked = cfg.working_days_indices.includes(parseInt(cb.value));
         });
 
-        // ساعات العمل والسعة والتوقيت
         if (document.getElementById('cfg-daily-capacity')) {
             document.getElementById('cfg-daily-capacity').value = cfg.daily_capacity;
             if (document.getElementById('cfg-opening-time')) document.getElementById('cfg-opening-time').value = cfg.opening_time || "16:00";
