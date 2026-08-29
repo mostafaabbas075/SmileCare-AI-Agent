@@ -144,7 +144,7 @@ class AppointmentService:
         Book a new appointment with Backend Business Hours, Active Services enforcement,
         and Atomic Pessimistic Row Locking to prevent Race Conditions / Overbooking.
         """
-        # 1. Lock Patient record (Pessimistic Lock) to prevent simultaneous duplicate bookings by the same user
+        # 1. Lock Patient record (Pessimistic Lock)
         patient_stmt = (
             select(Patient)
             .where(Patient.id == data.patient_id)
@@ -156,7 +156,7 @@ class AppointmentService:
         if not patient:
             raise NotFoundError("Patient", data.patient_id)
 
-        # 2. Lock Doctor record (Pessimistic Lock) to serialize capacity checks for concurrent requests
+        # 2. Lock Doctor record (Pessimistic Lock)
         doctor_stmt = (
             select(Doctor)
             .where(Doctor.id == data.doctor_id)
@@ -250,6 +250,7 @@ class AppointmentService:
 
         appointment = await self._repo.create(db, data.model_dump())
         await db.commit()
+        await db.refresh(appointment)
 
         logger.info(
             "appointment_booked",
@@ -291,6 +292,7 @@ class AppointmentService:
             db, appointment, data.model_dump(exclude_none=True)
         )
         await db.commit()
+        await db.refresh(updated)
         logger.info("appointment_updated", appointment_id=str(appointment_id), admin_override=admin_override)
         return updated
 
