@@ -3,7 +3,8 @@ Appointment service.
 
 Orchestrates appointment booking, cancellation, rescheduling, and retrieval.
 Enforces Policy V1 & Business Rules directly in Backend:
-- Strict Backend Business Hours (Sat, Mon, Tue | 16:00 - 22:00).
+- Dynamic Backend Business Hours & Working Days per Clinic.
+- Dynamic Daily Capacity enforcement per Clinic from Database.
 - Active Service validation (is_active check).
 - Admin Override capability to bypass policy restrictions.
 - Progressive No-Show penalty escalation.
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import AppointmentStatus
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.appointment import Appointment
+from app.models.clinic import Clinic
 from app.models.doctor import Doctor
 from app.models.patient import Patient
 from app.repositories.appointment import AppointmentRepository, appointment_repository
@@ -33,17 +35,17 @@ from app.schemas.appointment import AppointmentCreate, AppointmentUpdate
 
 logger = structlog.get_logger(__name__)
 
-# الحدود الصارمة لسياسة العيادة V1
-MAX_DAILY_PATIENTS: int = 5
+# الحدود الافتراضية الصارمة لسياسة العيادة V1
+MAX_DAILY_PATIENTS_DEFAULT: int = 5
 MAX_DAILY_ATTEMPTS: int = 3
 MAX_DAILY_EDITS: int = 2
 MAX_DAILY_CANCELS: int = 1
 CANCEL_COOLDOWN_MINUTES: int = 10
 
-# مواعيد وأيام العمل المعتمدة
-ALLOWED_WEEKDAYS: set[int] = {0, 1, 5}  # Mon (0), Tue (1), Sat (5)
-WORK_START_TIME: time = time(16, 0)
-WORK_END_TIME: time = time(22, 0)
+# المواعيد والأيام الافتراضية كـ Fallback
+DEFAULT_ALLOWED_WEEKDAYS: set[int] = {5, 6, 0, 1, 2}
+DEFAULT_WORK_START_TIME: time = time(16, 0)
+DEFAULT_WORK_END_TIME: time = time(22, 0)
 
 _ALLOWED_TRANSITIONS: dict[AppointmentStatus, set[AppointmentStatus]] = {
     AppointmentStatus.PENDING: {
@@ -142,8 +144,8 @@ class AppointmentService:
         admin_override: bool = False,
     ) -> Appointment:
         """
-        Book a new appointment with Backend Business Hours, Active Services enforcement,
-        and Atomic Pessimistic Row Locking to prevent Race Conditions / Overbooking.
+        Book a new appointment with Dynamic Clinic Capacity & Business Hours,
+        Active Services enforcement, and Atomic Pessimistic Row Locking.
         """
         # 1. Lock Patient record (Pessimistic Lock)
         patient_stmt = (
@@ -169,6 +171,29 @@ class AppointmentService:
         if not doctor:
             raise NotFoundError("Doctor", data.doctor_id)
 
+        # 3. تحديد وجلب العيادة وإعداداتها الحية من قاعدة البيانات
+        target_clinic_id = (
+            getattr(data, "clinic_id", None)
+            or doctor.clinic_id
+            or patient.clinic_id
+        )
+        clinic = await db.get(Clinic, target_clinic_id)
+        if not clinic:
+            raise NotFoundError("Clinic", target_clinic_id)
+
+        clinic_cfg = clinic.settings or {}
+        allowed_weekdays = set(clinic_cfg.get("working_days", list(DEFAULT_ALLOWED_WEEKDAYS)))
+        dynamic_capacity = int(clinic_cfg.get("daily_capacity", MAX_DAILY_PATIENTS_DEFAULT))
+
+        try:
+            open_str = clinic_cfg.get("opening_time", "16:00")
+            close_str = clinic_cfg.get("closing_time", "22:00")
+            work_start_time = time.fromisoformat(open_str)
+            work_end_time = time.fromisoformat(close_str)
+        except Exception:
+            work_start_time = DEFAULT_WORK_START_TIME
+            work_end_time = DEFAULT_WORK_END_TIME
+
         service = await self._service_repo.get_by_id(db, data.service_id)
         if not service:
             raise NotFoundError("Service", data.service_id)
@@ -177,11 +202,13 @@ class AppointmentService:
             raise ValidationError(f"الخدمة '{service.name}' غير متاحة للحجز حالياً.")
 
         if not admin_override:
-            if data.appointment_date.weekday() not in ALLOWED_WEEKDAYS:
-                raise ValidationError("العيادة مغلقة في اليوم المحدد. أيام العمل الرسمية هي: (السبت، الإثنين، الثلاثاء) فقط.")
+            if data.appointment_date.weekday() not in allowed_weekdays:
+                raise ValidationError("العيادة مغلقة في اليوم المحدد وفقاً لجدول العمل المسجل بالداشبورد.")
 
-            if data.appointment_time < WORK_START_TIME or data.appointment_time >= WORK_END_TIME:
-                raise ValidationError(f"الوقت المحدد خارج ساعات الاستقبال الرسمية ({WORK_START_TIME.strftime('%H:%M')} - {WORK_END_TIME.strftime('%H:%M')}).")
+            if data.appointment_time < work_start_time or data.appointment_time >= work_end_time:
+                raise ValidationError(
+                    f"الوقت المحدد خارج ساعات الاستقبال الرسمية للعيادة ({work_start_time.strftime('%H:%M')} - {work_end_time.strftime('%H:%M')})."
+                )
 
         await self._reset_daily_counters_if_needed(patient, db)
 
@@ -210,7 +237,7 @@ class AppointmentService:
             # فحص وجود حجز نشط لنفس المريض في نفس العيادة
             active_stmt = select(Appointment).where(
                 Appointment.patient_id == patient.id,
-                Appointment.clinic_id == patient.clinic_id,
+                Appointment.clinic_id == target_clinic_id,
                 Appointment.status.in_([
                     AppointmentStatus.PENDING,
                     AppointmentStatus.SCHEDULED,
@@ -226,11 +253,11 @@ class AppointmentService:
                     f"يمكنك تعديله أو إلغاؤه بدلاً من إنشاء حجز جديد."
                 )
 
-            # فحص السعة اليومية
+            # فحص السعة اليومية المحددة في الداشبورد للعيادة ديناميكياً
             count_stmt = (
                 select(func.count(Appointment.id))
                 .where(
-                    Appointment.clinic_id == doctor.clinic_id,
+                    Appointment.clinic_id == target_clinic_id,
                     Appointment.doctor_id == data.doctor_id,
                     Appointment.appointment_date == data.appointment_date,
                     Appointment.status.notin_([
@@ -243,23 +270,17 @@ class AppointmentService:
             res = await db.execute(count_stmt)
             daily_count = res.scalar() or 0
 
-            if daily_count >= MAX_DAILY_PATIENTS:
+            if daily_count >= dynamic_capacity:
                 raise ConflictError(
                     f"عذراً، اكتمل الحد الأقصى للحجوزات ليوم {data.appointment_date} "
-                    f"({MAX_DAILY_PATIENTS} مرضى). يرجى اختيار يوم آخر."
+                    f"({dynamic_capacity} مرضى فقط). يرجى اختيار يوم آخر."
                 )
 
         if hasattr(patient, "daily_attempts_count"):
             patient.daily_attempts_count = daily_attempts + 1
 
-        # ✅ استخراج وتأكيد وجود معرف العيادة لضمان العزل والظهور في الداشبورد
+        # استخراج وتأكيد وجود معرف العيادة لضمان العزل التام والظهور في الداشبورد
         appointment_payload = data.model_dump()
-        target_clinic_id = (
-            appointment_payload.get("clinic_id")
-            or getattr(data, "clinic_id", None)
-            or doctor.clinic_id
-            or patient.clinic_id
-        )
         appointment_payload["clinic_id"] = target_clinic_id
 
         appointment = await self._repo.create(db, appointment_payload)
@@ -272,6 +293,7 @@ class AppointmentService:
             clinic_id=str(target_clinic_id),
             patient_id=str(data.patient_id),
             date=str(data.appointment_date),
+            capacity_limit=dynamic_capacity,
             admin_override=admin_override,
         )
         return appointment
