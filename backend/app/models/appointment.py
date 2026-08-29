@@ -81,12 +81,12 @@ class Appointment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # ------------------------------------------------------------------
-    # Relationships
+    # Relationships (Using selectin for Async compatibility)
     # ------------------------------------------------------------------
-    clinic: Mapped["Clinic"] = relationship(back_populates="appointments", lazy="select")
-    patient: Mapped["Patient"] = relationship(back_populates="appointments", lazy="select")
-    doctor: Mapped["Doctor"] = relationship(back_populates="appointments", lazy="select")
-    service: Mapped["Service"] = relationship(back_populates="appointments", lazy="select")
+    clinic: Mapped["Clinic"] = relationship(back_populates="appointments", lazy="selectin")
+    patient: Mapped["Patient"] = relationship(back_populates="appointments", lazy="selectin")
+    doctor: Mapped["Doctor"] = relationship(back_populates="appointments", lazy="selectin")
+    service: Mapped["Service"] = relationship(back_populates="appointments", lazy="selectin")
 
     def __repr__(self) -> str:
         return (
