@@ -43,7 +43,7 @@ logger = structlog.get_logger(__name__)
 # الحد الأقصى للرسائل داخل الجلسة الواحدة
 MAX_SESSION_MESSAGES = 50
 
-# 🧠 ذاكرة المحادثات معزولة لكل عيادة وكل جلسة
+# ذاكرة المحادثات معزولة لكل عيادة وكل جلسة
 chat_memory_store: Dict[str, List[BaseMessage]] = {}
 
 DEFAULT_FALLBACK_SETTINGS: dict[str, Any] = {
@@ -95,7 +95,6 @@ class DentalAgent:
 
     async def _resolve_clinic(self) -> Clinic | None:
         """جلب بيانات العيادة الحالية وإعادة تحميل أحدث إعداداتها وعروضها من قاعدة البيانات مباشرة."""
-        # 1. البحث بالـ ID إن وُجد
         if self.clinic_id:
             stmt = select(Clinic).where(Clinic.id == self.clinic_id)
             res = await self.db.execute(stmt)
@@ -104,7 +103,6 @@ class DentalAgent:
                 self.clinic_slug = clinic.slug
                 return clinic
 
-        # 2. البحث بالـ Slug إن وُجد (القادم من الرابط ?clinic=slug)
         if self.clinic_slug:
             stmt = select(Clinic).where(Clinic.slug == self.clinic_slug)
             res = await self.db.execute(stmt)
@@ -113,7 +111,6 @@ class DentalAgent:
                 self.clinic_id = clinic.id
                 return clinic
 
-        # 3. خطة بديلة (Fallback): أول عيادة نشطة
         stmt = select(Clinic).where(Clinic.is_active == True).limit(1)
         res = await self.db.execute(stmt)
         clinic = res.scalar_one_or_none()
@@ -123,7 +120,7 @@ class DentalAgent:
         return clinic
 
     def _format_arabic_time(self, time_str: str) -> str:
-        """تحويل الوقت من 24-ساعة (16:00) إلى 12-ساعة بالعربي (4:00 عصراً)."""
+        """تحويل الوقت من 24-ساعة إلى 12-ساعة بالعربي."""
         try:
             t = datetime.strptime(time_str, "%H:%M")
             hour12 = t.strftime("%I:%M").lstrip("0")
@@ -140,8 +137,8 @@ class DentalAgent:
             return time_str
 
     def _get_live_clinic_config_context(self, clinic: Clinic | None) -> str:
-        """تحويل إعدادات العيادة الحية (أيام وساعات العمل، السعة) إلى سياق صارم للـ AI."""
-        cfg = (clinic.settings if clinic and clinic.settings else DEFAULT_FALLBACK_SETTINGS)
+        """تحويل إعدادات العيادة الحية إلى سياق صارم للـ AI."""
+        cfg = clinic.settings if clinic and clinic.settings else DEFAULT_FALLBACK_SETTINGS
 
         working_indices = cfg.get("working_days", [5, 6, 0, 1, 2])
         working_days_list = [ARABIC_DAY_NAMES[i] for i in working_indices if i in ARABIC_DAY_NAMES]
@@ -163,7 +160,7 @@ class DentalAgent:
         )
 
     async def _get_live_services_context(self) -> str:
-        """سحب قائمة الخدمات والأسعار الحية من قاعدة البيانات الخاصة بالعيادة الحالية."""
+        """سحب قائمة الخدمات والأسعار الحية من قاعدة البيانات للعيادة الحالية."""
         try:
             stmt = select(Service).where(
                 Service.is_active == True,
@@ -194,7 +191,7 @@ class DentalAgent:
             return "الأسعار الحالية متوفرة ومحدثة لدى لوحة التحكم والاستقبال."
 
     def _get_live_offers_context(self, clinic: Clinic | None) -> str:
-        """قراءة العروض والخصومات المضافة من الداشبورد فورياً بمرونة ودقة كاملة."""
+        """قراءة العروض والخصومات المضافة من الداشبورد فورياً."""
         if not clinic or not clinic.settings:
             return (
                 "🎁 حالة العروض بالعيادة: لا توجد عروض أو خصومات نشطة حالياً.\n"
@@ -202,8 +199,6 @@ class DentalAgent:
             )
 
         all_offers = clinic.settings.get("offers", [])
-        
-        # استخراج العروض المفعلة (تتعامل مع مختلف طرق كتابة الداشبورد للقيم)
         active_offers = [
             o for o in all_offers
             if o.get("is_active") is True or o.get("is_active") == "true" or str(o.get("is_active", "")).lower() == "true" or "is_active" not in o
@@ -219,16 +214,16 @@ class DentalAgent:
             "🎁 قائمة العروض والخصومات الخاصة النشطة في لوحة التحكم (الداشبورد) حالياً:",
             "⚠️ تعليمات حاسمة: عندما يسأل المريض عن العروض أو الخصومات، قدم له هذه العروض بدقة واذكر السعر قبل وبعد الخصم:"
         ]
-        
+
         for idx, o in enumerate(active_offers, 1):
             title = o.get("title") or o.get("name") or o.get("offer_title") or f"عرض خاص {idx}"
             service = o.get("service_name") or o.get("service") or o.get("related_service") or "خدمات الأسنان"
             orig_price = o.get("original_price") or o.get("originalPrice") or o.get("price")
             new_price = (
-                o.get("discounted_price") 
-                or o.get("discount_price") 
-                or o.get("offer_price") 
-                or o.get("offerPrice") 
+                o.get("discounted_price")
+                or o.get("discount_price")
+                or o.get("offer_price")
+                or o.get("offerPrice")
                 or o.get("new_price")
             )
             desc = o.get("description") or o.get("details") or ""
@@ -253,7 +248,7 @@ class DentalAgent:
         date: str = "",
         time: str = "16:00",
     ) -> str:
-        """إنشاء حجز حقيقي في قاعدة بيانات العيادة مع احتساب الخصم تلقائياً إن وُجد."""
+        """إنشاء حجز حقيقي في قاعدة بيانات العيادة مع ربطه بالعيادة الحالية بدقة."""
         try:
             clinic = await self._resolve_clinic()
             if not clinic:
@@ -343,16 +338,16 @@ class DentalAgent:
                 o for o in all_offers
                 if o.get("is_active") is True or o.get("is_active") == "true" or "is_active" not in o
             ]
-            
+
             applied_offer = next(
                 (o for o in active_offers if (o.get("service_name") or o.get("title", "")).strip().lower() in service.name.lower()),
-                None
+                None,
             )
 
             if applied_offer:
                 discount_price = (
-                    applied_offer.get("discounted_price") 
-                    or applied_offer.get("discount_price") 
+                    applied_offer.get("discounted_price")
+                    or applied_offer.get("discount_price")
                     or applied_offer.get("offer_price")
                     or applied_offer.get("offerPrice")
                 )
@@ -365,7 +360,9 @@ class DentalAgent:
                 booking_note = f"السن: {patient_age} | السعر: {final_price} ج.م"
                 price_message = f"{final_price} ج.م"
 
+            # ✅ تم تمرير clinic_id=clinic.id بشكل صريح لربط الحجز بالعيادة الحالية
             appointment_data = AppointmentCreate(
+                clinic_id=clinic.id,
                 patient_id=patient.id,
                 doctor_id=doctor.id,
                 service_id=service.id,
@@ -378,7 +375,6 @@ class DentalAgent:
                 self.db,
                 appointment_data,
             )
-            
 
             return (
                 "تم تسجيل طلب الحجز بنجاح. 🎉\n"
@@ -423,13 +419,11 @@ class DentalAgent:
         if clinic_slug:
             self.clinic_slug = clinic_slug.strip().lower()
 
-        # مزامنة بيانات العيادة الحية فورياً
         clinic = await self._resolve_clinic()
         clinic_name = clinic.name if clinic else "العيادة التخصصية للأسنان"
         clinic_address = clinic.address if clinic and clinic.address else "مقر العيادة الرئيسي"
         clinic_phone = clinic.phone if clinic and clinic.phone else "استقبال العيادة"
 
-        # مفتاح عزل الذاكرة حسب العيادة وجلسة المستخدم
         tenant_identifier = str(self.clinic_id) if self.clinic_id else (self.clinic_slug or "default")
         tenant_session_key = f"{tenant_identifier}:{session_id}"
 
@@ -444,7 +438,6 @@ class DentalAgent:
                 f"يرجى بدء محادثة جديدة أو التواصل مع {clinic_name} هاتفياً على ({clinic_phone})."
             )
 
-        # فحص الحماية والأمان
         sec_res = security_service.inspect_message(
             message,
             conversation_history_count=len(history),
@@ -460,7 +453,6 @@ class DentalAgent:
                 f"حرصاً على تقديم أفضل رعاية طبية لك، يرجى التواصل مع استقبال {clinic_name} مباشرة على ({clinic_phone}). 📞"
             )
 
-        # فحص النوايا الثابتة
         router_res = intent_router.route_message(message)
         if router_res.handled_by_backend and router_res.response_text:
             history.append(HumanMessage(content=message))
@@ -468,14 +460,12 @@ class DentalAgent:
             chat_memory_store[tenant_session_key] = history
             return router_res.response_text
 
-        # استرجاع المعرفة عبر RAG (مع Tenant Filter)
         try:
             context = await self.retriever.search(message, clinic_id=self.clinic_id)
         except Exception as exc:
             logger.error("qdrant_retrieval_failed", error=str(exc), clinic_id=str(self.clinic_id))
             context = "لا توجد معلومات إضافية."
 
-        # بناء السياق الحي المتصل بالداشبورد
         live_services_context = await self._get_live_services_context()
         live_clinic_config = self._get_live_clinic_config_context(clinic)
         live_offers_context = self._get_live_offers_context(clinic)
@@ -565,7 +555,6 @@ class DentalAgent:
             else:
                 raw_content = response.content
 
-            # معالجة وتنسيق الرد النهائي
             if isinstance(raw_content, list):
                 text_parts = [
                     part if isinstance(part, str) else part.get("text", "")
@@ -580,7 +569,6 @@ class DentalAgent:
 
             final_text = final_text.strip()
 
-            # حفظ سجل المحادثة
             history.append(HumanMessage(content=message))
             history.append(AIMessage(content=final_text))
 

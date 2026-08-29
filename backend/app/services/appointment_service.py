@@ -8,6 +8,7 @@ Enforces Policy V1 & Business Rules directly in Backend:
 - Admin Override capability to bypass policy restrictions.
 - Progressive No-Show penalty escalation.
 - Atomic Booking & Race Condition protection using Pessimistic Row Locking.
+- Strict Multi-Tenant Clinic Isolation.
 """
 
 from __future__ import annotations
@@ -206,8 +207,10 @@ class AppointmentService:
                     remaining = int((cooldown_until - datetime.utcnow()).total_seconds() // 60) + 1
                     raise ValidationError(f"يرجى الانتظار {remaining} دقائق قبل إجراء حجز جديد بعد الإلغاء.")
 
+            # فحص وجود حجز نشط لنفس المريض في نفس العيادة
             active_stmt = select(Appointment).where(
                 Appointment.patient_id == patient.id,
+                Appointment.clinic_id == patient.clinic_id,
                 Appointment.status.in_([
                     AppointmentStatus.PENDING,
                     AppointmentStatus.SCHEDULED,
@@ -223,10 +226,11 @@ class AppointmentService:
                     f"يمكنك تعديله أو إلغاؤه بدلاً من إنشاء حجز جديد."
                 )
 
-            # Capacity check under atomic Doctor lock
+            # فحص السعة اليومية
             count_stmt = (
                 select(func.count(Appointment.id))
                 .where(
+                    Appointment.clinic_id == doctor.clinic_id,
                     Appointment.doctor_id == data.doctor_id,
                     Appointment.appointment_date == data.appointment_date,
                     Appointment.status.notin_([
@@ -248,13 +252,24 @@ class AppointmentService:
         if hasattr(patient, "daily_attempts_count"):
             patient.daily_attempts_count = daily_attempts + 1
 
-        appointment = await self._repo.create(db, data.model_dump())
+        # ✅ استخراج وتأكيد وجود معرف العيادة لضمان العزل والظهور في الداشبورد
+        appointment_payload = data.model_dump()
+        target_clinic_id = (
+            appointment_payload.get("clinic_id")
+            or getattr(data, "clinic_id", None)
+            or doctor.clinic_id
+            or patient.clinic_id
+        )
+        appointment_payload["clinic_id"] = target_clinic_id
+
+        appointment = await self._repo.create(db, appointment_payload)
         await db.commit()
         await db.refresh(appointment)
 
         logger.info(
             "appointment_booked",
             appointment_id=str(appointment.id),
+            clinic_id=str(target_clinic_id),
             patient_id=str(data.patient_id),
             date=str(data.appointment_date),
             admin_override=admin_override,
