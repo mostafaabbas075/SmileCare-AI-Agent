@@ -1,6 +1,5 @@
-const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-    ? "http://127.0.0.1:8000/api/v1"
-    : "https://smilecare-ai-agent.fastapicloud.dev/api/v1";
+// ✅ رابط نسبي ليعمل تلقائياً على السيرفر السحابي أو السيرفر المحلي
+const API_BASE = "/api/v1";
 
 let currentNav = 'nav-today';
 let dailyData = null;

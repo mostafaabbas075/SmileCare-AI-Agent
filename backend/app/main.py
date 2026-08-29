@@ -7,6 +7,7 @@ Configures:
   3. Structured Request Logging & Request-ID Tracing.
   4. Automatic DB Tables creation & First Admin Seeder.
   5. Global Exception Handlers.
+  6. Direct Static Serving for Doctor Admin Dashboard.
 """
 
 from __future__ import annotations
@@ -171,10 +172,14 @@ def create_app() -> FastAPI:
     _register_exception_handlers(app)
     _register_routers(app)
 
-    # Mount Dashboard Frontend Static Files
-    _dashboard_dir = Path(__file__).parent.parent / "dashboard-frontend"
+    # Mount Dashboard Frontend Static Files on /admin and /dashboard
+    _dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard-frontend"
     if _dashboard_dir.is_dir():
+        logger.info("mounting_dashboard_frontend", path=str(_dashboard_dir))
+        app.mount("/admin", StaticFiles(directory=str(_dashboard_dir), html=True), name="admin_dashboard")
         app.mount("/dashboard", StaticFiles(directory=str(_dashboard_dir), html=True), name="dashboard")
+    else:
+        logger.warning("dashboard_frontend_dir_not_found", path=str(_dashboard_dir))
 
     return app
 
