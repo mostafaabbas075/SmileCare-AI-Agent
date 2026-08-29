@@ -10,20 +10,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# تثبيت متطلبات النظام بأمان
+# تثبيت أدوات النظام
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# تثبيت مكتبات البايثون
-COPY requirements.txt .
+# نسخ وتثبيت المكتبات من مسار backend الصحيح
+COPY backend/requirements.txt requirements.txt
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
-# نسخ كامل محتويات الباك إند (بما فيها dashboard-frontend والـ app)
-COPY . .
+# نسخ محتويات مجلد backend بالكامل
+COPY backend/ .
 
 EXPOSE 8080
 
