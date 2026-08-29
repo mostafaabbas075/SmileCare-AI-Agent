@@ -10,20 +10,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System dependencies
+# تثبيت متطلبات النظام بأمان
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Python dependencies
+# تثبيت مكتبات البايثون
 COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
 
-RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
-
-# Application
-COPY app ./app
+# نسخ كامل محتويات الباك إند (بما فيها dashboard-frontend والـ app)
+COPY . .
 
 EXPOSE 8080
 
