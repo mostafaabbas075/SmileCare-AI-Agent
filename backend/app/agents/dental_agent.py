@@ -377,8 +377,8 @@ class DentalAgent:
             appointment = await appointment_service.book_appointment(
                 self.db,
                 appointment_data,
-                clinic_id=clinic.id,
             )
+            
 
             return (
                 "تم تسجيل طلب الحجز بنجاح. 🎉\n"
