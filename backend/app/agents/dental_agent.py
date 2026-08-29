@@ -3,7 +3,7 @@ Multi-Tenant Dental Agent (Virtual Receptionist).
 
 Handles patient interactions, intent routing, dynamic clinic context retrieval,
 and appointment booking strictly isolated per clinic:
-- Real-Time Live Sync with Clinic Dashboard (Settings, Working Hours, Capacity).
+- Real-Time Live Sync with Clinic Dashboard (Settings, Working Hours, Capacity, GPS).
 - Dynamic Live Services & Pricing Context from PostgreSQL.
 - Dynamic Active Offers & Discounts synced live with Clinic Dashboard Settings.
 - Anti-Hallucination Guardrails for Dates, Times, Prices, and Offers.
@@ -53,6 +53,7 @@ DEFAULT_FALLBACK_SETTINGS: dict[str, Any] = {
     "closing_time": "22:00",
     "timezone": "Africa/Cairo",
     "offers": [],
+    "gps_link": "",
 }
 
 ARABIC_DAY_NAMES = {
@@ -85,7 +86,6 @@ class DentalAgent:
             google_api_key=settings.GOOGLE_API_KEY,
         )
 
-        # ربط أداة الحجز بالوكيل الذكي
         self.llm_with_tools = self.llm.bind_tools(
             [self.book_dental_appointment]
         )
@@ -94,7 +94,7 @@ class DentalAgent:
         self.retriever = ClinicRetriever(embedder=self.embedder)
 
     async def _resolve_clinic(self) -> Clinic | None:
-        """جلب بيانات العيادة الحالية وإعادة تحميل أحدث إعداداتها وعروضها من قاعدة البيانات مباشرة."""
+        """جلب بيانات العيادة الحالية من قاعدة البيانات."""
         if self.clinic_id:
             stmt = select(Clinic).where(Clinic.id == self.clinic_id)
             res = await self.db.execute(stmt)
@@ -120,7 +120,6 @@ class DentalAgent:
         return clinic
 
     def _format_arabic_time(self, time_str: str) -> str:
-        """تحويل الوقت من 24-ساعة إلى 12-ساعة بالعربي."""
         try:
             t = datetime.strptime(time_str, "%H:%M")
             hour12 = t.strftime("%I:%M").lstrip("0")
@@ -137,7 +136,6 @@ class DentalAgent:
             return time_str
 
     def _get_live_clinic_config_context(self, clinic: Clinic | None) -> str:
-        """تحويل إعدادات العيادة الحية إلى سياق صارم للـ AI."""
         cfg = clinic.settings if clinic and clinic.settings else DEFAULT_FALLBACK_SETTINGS
 
         working_indices = cfg.get("working_days", [5, 6, 0, 1, 2])
@@ -160,7 +158,6 @@ class DentalAgent:
         )
 
     async def _get_live_services_context(self) -> str:
-        """سحب قائمة الخدمات والأسعار الحية من قاعدة البيانات للعيادة الحالية."""
         try:
             stmt = select(Service).where(
                 Service.is_active == True,
@@ -191,7 +188,6 @@ class DentalAgent:
             return "الأسعار الحالية متوفرة ومحدثة لدى لوحة التحكم والاستقبال."
 
     def _get_live_offers_context(self, clinic: Clinic | None) -> str:
-        """قراءة العروض والخصومات المضافة من الداشبورد فورياً."""
         if not clinic or not clinic.settings:
             return (
                 "🎁 حالة العروض بالعيادة: لا توجد عروض أو خصومات نشطة حالياً.\n"
@@ -269,7 +265,6 @@ class DentalAgent:
             first_name = name_parts[0] if name_parts else "مريض"
             last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else "جديد"
 
-            # 1. المريض ضمن نطاق العيادة
             stmt_patient = select(Patient).where(
                 Patient.phone == phone_number,
                 Patient.clinic_id == clinic.id,
@@ -287,7 +282,6 @@ class DentalAgent:
                 self.db.add(patient)
                 await self.db.flush()
 
-            # 2. الطبيب الخاص بالعيادة
             stmt_doc = select(Doctor).where(Doctor.clinic_id == clinic.id).limit(1)
             res_d = await self.db.execute(stmt_doc)
             doctor = res_d.scalar_one_or_none()
@@ -302,7 +296,6 @@ class DentalAgent:
                 self.db.add(doctor)
                 await self.db.flush()
 
-            # 3. الخدمة الخاصة بالعيادة
             stmt_serv = select(Service).where(
                 Service.clinic_id == clinic.id,
                 Service.name.ilike(f"%{service_name.strip()}%"),
@@ -332,7 +325,6 @@ class DentalAgent:
                 self.db.add(service)
                 await self.db.flush()
 
-            # 4. فحص العروض الخاصة بالعيادة لاحتساب السعر بعد الخصم
             all_offers = (clinic.settings or {}).get("offers", [])
             active_offers = [
                 o for o in all_offers
@@ -360,7 +352,6 @@ class DentalAgent:
                 booking_note = f"السن: {patient_age} | السعر: {final_price} ج.م"
                 price_message = f"{final_price} ج.م"
 
-            # ✅ تم تمرير clinic_id=clinic.id بشكل صريح لربط الحجز بالعيادة الحالية
             appointment_data = AppointmentCreate(
                 clinic_id=clinic.id,
                 patient_id=patient.id,
@@ -423,6 +414,10 @@ class DentalAgent:
         clinic_name = clinic.name if clinic else "العيادة التخصصية للأسنان"
         clinic_address = clinic.address if clinic and clinic.address else "مقر العيادة الرئيسي"
         clinic_phone = clinic.phone if clinic and clinic.phone else "استقبال العيادة"
+        
+        # قراءة رابط خرائط جوجل GPS من إعدادات العيادة
+        clinic_cfg = clinic.settings if clinic and clinic.settings else {}
+        gps_link = clinic_cfg.get("gps_link", "")
 
         tenant_identifier = str(self.clinic_id) if self.clinic_id else (self.clinic_slug or "default")
         tenant_session_key = f"{tenant_identifier}:{session_id}"
@@ -472,8 +467,15 @@ class DentalAgent:
 
         today = date_cls.today().isoformat()
 
+        location_context = f"- عنوان العيادة: {clinic_address}\n- رقم الهاتف: {clinic_phone}"
+        if gps_link:
+            location_context += f"\n- رابط موقع العيادة على خرائط جوجل (GPS Link): {gps_link}"
+
         system_prompt = f"""
-أنت موظف استقبال افتراضي ذكي (AI Agent) لعيادة ({clinic_name})، وهي عيادة واقعية ومعتمدة (العنوان: {clinic_address} | هاتف: {clinic_phone}).
+أنت موظف استقبال افتراضي ذكي (AI Agent) لعيادة ({clinic_name})، وهي عيادة واقعية ومعتمدة.
+
+📍 معلومات الموقع والاتصال:
+{location_context}
 
 {live_clinic_config}
 
@@ -486,6 +488,7 @@ class DentalAgent:
 2. لا يُسمح بأكثر من حجز نشط (Active) لنفس رقم الهاتف في العيادة.
 3. إذا سأل المريض عن العروض أو الخصومات، قدم له العروض المذكورة أعلاه في "قائمة العروض والخصومات" بحماس ودقة وبالأسعار المحددة.
 4. إذا لم يسأل عن العروض، لا تنفِ العروض من تلقاء نفسك بل أجب على سؤاله مباشرة.
+5. 🗺️ **موقع العيادة ورابط الخريطة (GPS):** إذا طلب المريض موقع أو عنوان العيادة أو طلب رابط اللوكيشن / الخريطة، أرسل له العنوان ورابط خرائط جوجل (GPS) الموضح أعلاه فوراً وبكل وضوح.
 
 البيانات المطلوب جمعها للحجز بأسلوب طبيعي ولبق:
 - الاسم الكامل
