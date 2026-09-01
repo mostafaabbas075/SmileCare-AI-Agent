@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 import httpx
 import structlog
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import desc, func, or_, select
 
@@ -33,6 +34,26 @@ class ToggleAIRequest(BaseModel):
     clinic_slug: str = "white"
 
 
+# ── Helper: Format Text for WhatsApp ─────────────────────────────────────────
+
+
+def format_text_for_whatsapp(text: str) -> str:
+    """تحويل علامات Markdown العامة إلى صيغة واتساب المقروءة:
+
+    - استبدال **نص عريض** بـ *نص عريض*
+    - إزالة علامات العناوين ###
+    """
+    if not text:
+        return ""
+    # تحويل النجوم المزدوجة إلى نجمة واحدة للخط العريض في واتساب
+    formatted = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
+    # تحويل الخط المائل المزدوج إن وجد
+    formatted = re.sub(r"__(.*?)__", r"_\1_", formatted)
+    # إزالة علامات العناوين Markdown من بداية الأسطر
+    formatted = re.sub(r"^#{1,6}\s*", "", formatted, flags=re.MULTILINE)
+    return formatted.strip()
+
+
 # ── Webhook Verification & Receiving ─────────────────────────────────────────
 
 
@@ -51,7 +72,7 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def receive_whatsapp_message(request: Request):
-    """استقبال رسائل المرضى القادمة من واتساب، حفظها، والرد بالذكاء الاصطناعي إذا لم يتم إيقافه."""
+    """استقبال رسائل المرضى، حفظها، والرد بالذكاء الاصطناعي إذا لم يتم إيقافه."""
     payload = await request.json()
 
     for entry in payload.get("entry", []):
@@ -75,7 +96,7 @@ async def receive_whatsapp_message(request: Request):
                 continue
 
             async with AsyncSessionFactory() as db:
-                # 1. مطابقة العيادة
+                # 1. مطابقة العيادة بالرقم أو اختيار عيادة white
                 stmt = (
                     select(Clinic)
                     .where(
@@ -106,7 +127,6 @@ async def receive_whatsapp_message(request: Request):
 
                 clinic_settings = clinic.settings or {}
                 access_token = clinic_settings.get("whatsapp_access_token")
-
                 session_key = f"wa_{sender_phone}"
 
                 # 2. تسجيل رسالة المريض الواردة في السجل
@@ -149,7 +169,7 @@ async def receive_whatsapp_message(request: Request):
                 db.add(ai_msg_entry)
                 await db.commit()
 
-                # 6. إرسال الرد للمريض على واتساب
+                # 6. إرسال الرد للمريض على واتساب بتنسيق نظيف
                 await send_whatsapp_message(
                     phone_number_id=str(phone_number_id),
                     recipient_phone=sender_phone,
@@ -175,7 +195,6 @@ async def get_recent_conversations(clinic_slug: str = "white"):
 
         paused_numbers = (clinic.settings or {}).get("paused_ai_numbers", [])
 
-        # فرز المحادثات حسب آخر ظهور بالاعتماد على session_id
         query = (
             select(
                 ConversationHistory.session_id,
@@ -242,34 +261,43 @@ async def get_chat_history(phone_number: str):
 
 @router.post("/chats/send-manual")
 async def send_manual_message(req: ManualMessageRequest):
-    """إرسال رسالة يدوية من موظف العيادة مباشرة إلى واتساب المريض."""
+    """إرسال رسالة يدوية من موظف العيادة مباشرة إلى واتساب وتخزينها في السجل."""
     async with AsyncSessionFactory() as db:
-        stmt = select(Clinic).where(Clinic.slug == req.clinic_slug).limit(1)
+        stmt = (
+            select(Clinic)
+            .where(
+                Clinic.is_active.is_(True),
+                or_(
+                    Clinic.slug == req.clinic_slug,
+                    Clinic.slug == "white",
+                ),
+            )
+            .limit(1)
+        )
         res = await db.execute(stmt)
         clinic = res.scalar_one_or_none()
 
         if not clinic:
-            return {"status": "error", "message": "Clinic not found"}
+            raise HTTPException(status_code=404, detail="Clinic not found")
 
         clinic_settings = clinic.settings or {}
         access_token = clinic_settings.get("whatsapp_access_token")
         phone_id = clinic_settings.get("whatsapp_phone_number_id")
 
         if not access_token or not phone_id:
-            return {
-                "status": "error",
-                "message": "Missing WhatsApp credentials",
-            }
+            raise HTTPException(
+                status_code=400, detail="Missing WhatsApp credentials"
+            )
 
-        # 1. إرسال الرسالة إلى واتساب
+        # 1. إرسال الرسالة للمريض على واتساب
         await send_whatsapp_message(
-            phone_number_id=phone_id,
+            phone_number_id=str(phone_id),
             recipient_phone=req.phone_number,
             message_text=req.message,
             access_token=access_token,
         )
 
-        # 2. تسجيل رسالة الموظف في السجل
+        # 2. تسجيل رسالة الموظف في قاعدة البيانات
         session_id = f"wa_{req.phone_number}"
         staff_entry = ConversationHistory(
             session_id=session_id,
@@ -286,12 +314,22 @@ async def send_manual_message(req: ManualMessageRequest):
 async def toggle_ai_mode(req: ToggleAIRequest):
     """إيقاف أو تفعيل الرد التلقائي للـ AI لمحادثة معينة."""
     async with AsyncSessionFactory() as db:
-        stmt = select(Clinic).where(Clinic.slug == req.clinic_slug).limit(1)
+        stmt = (
+            select(Clinic)
+            .where(
+                Clinic.is_active.is_(True),
+                or_(
+                    Clinic.slug == req.clinic_slug,
+                    Clinic.slug == "white",
+                ),
+            )
+            .limit(1)
+        )
         res = await db.execute(stmt)
         clinic = res.scalar_one_or_none()
 
         if not clinic:
-            return {"status": "error", "message": "Clinic not found"}
+            raise HTTPException(status_code=404, detail="Clinic not found")
 
         settings_dict = dict(clinic.settings or {})
         paused_list = set(settings_dict.get("paused_ai_numbers", []))
@@ -317,7 +355,9 @@ async def send_whatsapp_message(
     message_text: str,
     access_token: str,
 ):
-    """إرسال الرسالة عبر WhatsApp Cloud API."""
+    """إرسال الرسالة مع ضبط التنسيق ليتوافق مع واتساب."""
+    clean_text = format_text_for_whatsapp(message_text)
+
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -327,7 +367,7 @@ async def send_whatsapp_message(
         "messaging_product": "whatsapp",
         "to": recipient_phone,
         "type": "text",
-        "text": {"body": message_text},
+        "text": {"body": clean_text},
     }
 
     try:
