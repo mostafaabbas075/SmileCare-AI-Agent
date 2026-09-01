@@ -47,6 +47,11 @@ from app.models.service import Service
 from app.models.user import User, UserRole
 from app.schemas.common import ErrorResponse
 
+from app.api.v1.whatsapp import router as whatsapp_router
+
+app.include_router(whatsapp_router, prefix="/api/v1")
+
+
 logger = structlog.get_logger(__name__)
 
 # =============================================================================
