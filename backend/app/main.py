@@ -30,6 +30,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy import select
 
 from app.api.v1.router import router as api_v1_router
+from app.api.v1.whatsapp import router as whatsapp_router
 from app.core.config import settings
 from app.core.constants import API_V1_PREFIX, HEALTH_CHECK_PATH
 from app.core.exceptions import AppException
@@ -46,11 +47,6 @@ from app.models.patient import Patient
 from app.models.service import Service
 from app.models.user import User, UserRole
 from app.schemas.common import ErrorResponse
-
-from app.api.v1.whatsapp import router as whatsapp_router
-
-app.include_router(whatsapp_router, prefix="/api/v1")
-
 
 logger = structlog.get_logger(__name__)
 
@@ -70,13 +66,14 @@ limiter = Limiter(
 
 async def _auto_seed_first_admin() -> None:
     """إنشاء العيادة الافتراضية وحساب الأدمن الأول عند الإقلاع تلقائياً."""
-    if not getattr(settings, "ADMIN_USERNAME", None) or not getattr(settings, "ADMIN_PASSWORD", None):
+    if not getattr(settings, "ADMIN_USERNAME", None) or not getattr(
+        settings, "ADMIN_PASSWORD", None
+    ):
         logger.info("admin_seed_skipped_no_env_vars")
         return
 
     try:
         async with AsyncSessionFactory() as db:
-            # 1. فحص وجود العيادة الافتراضية
             stmt_clinic = select(Clinic).where(Clinic.slug == "main-clinic")
             res_clinic = await db.execute(stmt_clinic)
             clinic = res_clinic.scalars().first()
@@ -92,7 +89,6 @@ async def _auto_seed_first_admin() -> None:
                 db.add(clinic)
                 await db.flush()
 
-            # 2. فحص وجود حساب أدمن باسم المستخدم المحدد
             stmt = select(User).where(User.username == settings.ADMIN_USERNAME)
             res = await db.execute(stmt)
             existing_admin = res.scalars().first()
@@ -133,14 +129,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     try:
-        # 1. إنشاء الجداول
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
         created_tables = list(Base.metadata.tables.keys())
         logger.info("database_tables_created_ok", tables=created_tables)
 
-        # 2. تشغيل الـ Seeder
         await _auto_seed_first_admin()
 
     except Exception as exc:
@@ -151,42 +145,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("application_shutdown")
     await engine.dispose()
-
-
-# =============================================================================
-# App Factory
-# =============================================================================
-
-def create_app() -> FastAPI:
-    """Construct and configure the FastAPI application."""
-    is_prod = getattr(settings, "ENVIRONMENT", "").lower() == "production"
-
-    app = FastAPI(
-        title=settings.app_name,
-        version=settings.app_version,
-        description="AI-powered multi-tenant virtual receptionist and administration system.",
-        docs_url=None if is_prod else "/docs",
-        redoc_url=None if is_prod else "/redoc",
-        openapi_url=None if is_prod else "/openapi.json",
-        lifespan=lifespan,
-    )
-
-    app.state.limiter = limiter
-
-    _register_middleware(app)
-    _register_exception_handlers(app)
-    _register_routers(app)
-
-    # Mount Dashboard Frontend Static Files on /admin and /dashboard
-    _dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard-frontend"
-    if _dashboard_dir.is_dir():
-        logger.info("mounting_dashboard_frontend", path=str(_dashboard_dir))
-        app.mount("/admin", StaticFiles(directory=str(_dashboard_dir), html=True), name="admin_dashboard")
-        app.mount("/dashboard", StaticFiles(directory=str(_dashboard_dir), html=True), name="dashboard")
-    else:
-        logger.warning("dashboard_frontend_dir_not_found", path=str(_dashboard_dir))
-
-    return app
 
 
 # =============================================================================
@@ -216,7 +174,6 @@ def _register_middleware(app: FastAPI) -> None:
         allow_headers=["*"],
     )
 
-    # Structured Request Logging & Request-ID
     @app.middleware("http")
     async def logging_middleware(request: Request, call_next: object) -> object:
         request_id = str(uuid.uuid4())
@@ -266,7 +223,9 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(PydanticValidationError)
-    async def pydantic_exception_handler(request: Request, exc: PydanticValidationError) -> JSONResponse:
+    async def pydantic_exception_handler(
+        request: Request, exc: PydanticValidationError
+    ) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=ErrorResponse(
@@ -277,7 +236,9 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    async def unhandled_exception_handler(
+        request: Request, exc: Exception
+    ) -> JSONResponse:
         logger.exception("unhandled_exception", path=request.url.path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -311,6 +272,50 @@ def _register_routers(app: FastAPI) -> None:
         }
 
     app.include_router(api_v1_router, prefix=API_V1_PREFIX)
+    app.include_router(whatsapp_router, prefix=API_V1_PREFIX)
+
+
+# =============================================================================
+# App Factory
+# =============================================================================
+
+def create_app() -> FastAPI:
+    """Construct and configure the FastAPI application."""
+    is_prod = getattr(settings, "ENVIRONMENT", "").lower() == "production"
+
+    app = FastAPI(
+        title=settings.app_name,
+        version=settings.app_version,
+        description="AI-powered multi-tenant virtual receptionist and administration system.",
+        docs_url=None if is_prod else "/docs",
+        redoc_url=None if is_prod else "/redoc",
+        openapi_url=None if is_prod else "/openapi.json",
+        lifespan=lifespan,
+    )
+
+    app.state.limiter = limiter
+
+    _register_middleware(app)
+    _register_exception_handlers(app)
+    _register_routers(app)
+
+    _dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard-frontend"
+    if _dashboard_dir.is_dir():
+        logger.info("mounting_dashboard_frontend", path=str(_dashboard_dir))
+        app.mount(
+            "/admin",
+            StaticFiles(directory=str(_dashboard_dir), html=True),
+            name="admin_dashboard",
+        )
+        app.mount(
+            "/dashboard",
+            StaticFiles(directory=str(_dashboard_dir), html=True),
+            name="dashboard",
+        )
+    else:
+        logger.warning("dashboard_frontend_dir_not_found", path=str(_dashboard_dir))
+
+    return app
 
 
 # =============================================================================
