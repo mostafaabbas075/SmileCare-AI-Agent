@@ -3,17 +3,17 @@ from __future__ import annotations
 import httpx
 import structlog
 from fastapi import APIRouter, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
+from app.agents.dental_agent import DentalAgent
 from app.database.base import AsyncSessionFactory
 from app.models.clinic import Clinic
-from app.agents.dental_agent import DentalAgent
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp Webhook"])
 
-# كود التحقق الذي تحدده في لوحة تحكم Meta
+# كود التحقق السري المشترك مع Meta
 WHATSAPP_VERIFY_TOKEN = "smilecare_whatsapp_secret_token_2026"
 
 
@@ -32,17 +32,16 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def receive_whatsapp_message(request: Request):
-    """استقبال رسائل المرضى القادمة من واتساب ومعالجتها فورياً."""
+    """استقبال رسائل المرضى القادمة من واتساب وتوجيهها ديناميكياً للعيادة المناسبة."""
     payload = await request.json()
 
-    # فحص الرسائل الواردة
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             val = change.get("value", {})
             metadata = val.get("metadata", {})
-            phone_number_id = metadata.get("phone_number_id")  # معرف رقم العيادة في Meta
+            phone_number_id = metadata.get("phone_number_id")
 
-            # تجاهل إشعارات القراءة (Read Receipts) واستقبال نصوص الرسائل فقط
+            # استخراج الرسائل وتجاهل التحديثات الأخرى
             messages = val.get("messages", [])
             if not messages:
                 continue
@@ -51,45 +50,68 @@ async def receive_whatsapp_message(request: Request):
             if msg.get("type") != "text":
                 continue
 
-            sender_phone = msg.get("from")  # رقم واتساب المريض
+            sender_phone = msg.get("from")
             user_text = msg.get("text", {}).get("body", "").strip()
 
             if not user_text or not phone_number_id:
                 continue
 
-            # 1. مطابقة العيادة صاحبة هذا الرقم من قاعدة البيانات
             async with AsyncSessionFactory() as db:
-                stmt = select(Clinic).where(
-                    Clinic.settings["whatsapp_phone_number_id"].astext == str(phone_number_id),
-                    Clinic.is_active == True,
+                # 1. البحث الديناميكي: مطابقة phone_number_id أو السقوط على عيادة white
+                stmt = (
+                    select(Clinic)
+                    .where(
+                        Clinic.is_active.is_(True),
+                        or_(
+                            Clinic.settings["whatsapp_phone_number_id"].astext
+                            == str(phone_number_id),
+                            Clinic.slug == "white",
+                        ),
+                    )
+                    .order_by(
+                        (
+                            Clinic.settings["whatsapp_phone_number_id"].astext
+                            == str(phone_number_id)
+                        ).desc()
+                    )
+                    .limit(1)
                 )
+
                 res = await db.execute(stmt)
                 clinic = res.scalar_one_or_none()
 
                 if not clinic:
-                    # عيادة افتراضية في حالة الاختبار
-                    stmt_fallback = select(Clinic).where(Clinic.slug == "al-sharif").limit(1)
-                    res_fb = await db.execute(stmt_fallback)
-                    clinic = res_fb.scalar_one_or_none()
-
-                if not clinic:
+                    logger.warning(
+                        "clinic_not_found_for_phone_id",
+                        phone_number_id=phone_number_id,
+                    )
                     continue
 
-                # 2. تشغيل الـ AI Agent الخاص بالعيادة
+                clinic_settings = clinic.settings or {}
+                access_token = clinic_settings.get("whatsapp_access_token")
+
+                if not access_token:
+                    logger.warning(
+                        "missing_whatsapp_access_token",
+                        clinic_slug=clinic.slug,
+                        phone_number_id=phone_number_id,
+                    )
+                    continue
+
+                # 2. تشغيل وكيل الذكاء الاصطناعي الخاص بالعيادة
                 agent = DentalAgent(db_session=db, clinic_id=clinic.id)
                 session_key = f"wa_{sender_phone}"
-                
+
                 ai_reply = await agent.run(
                     message=user_text,
                     session_id=session_key,
                     clinic_id=clinic.id,
                 )
 
-                # 3. إرسال الرد إلى واتساب المريض
-                access_token = (clinic.settings or {}).get("whatsapp_access_token")
+                # 3. إرسال الرد الفوري إلى المريض
                 await send_whatsapp_message(
-                    phone_number_id=phone_number_id,
-                    recipient_phone=sender_phone,
+                    phone_number_id=str(phone_number_id),
+                    recipient_phone=str(sender_phone),
                     message_text=ai_reply,
                     access_token=access_token,
                 )
@@ -101,14 +123,10 @@ async def send_whatsapp_message(
     phone_number_id: str,
     recipient_phone: str,
     message_text: str,
-    access_token: str | None,
+    access_token: str,
 ):
-    """إرسال الرسالة إلى هاتف المريض عبر WhatsApp Cloud API."""
-    if not access_token:
-        logger.warning("missing_whatsapp_access_token", phone_number_id=phone_number_id)
-        return
-
-    url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
+    """إرسال رد الذكاء الاصطناعي عبر Meta Graph API."""
+    url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -121,9 +139,19 @@ async def send_whatsapp_message(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code != 200:
-                logger.error("whatsapp_send_failed", status=resp.status_code, body=resp.text)
+            if resp.status_code == 200:
+                logger.info(
+                    "whatsapp_reply_sent_successfully",
+                    to=recipient_phone,
+                    phone_number_id=phone_number_id,
+                )
+            else:
+                logger.error(
+                    "whatsapp_send_failed",
+                    status_code=resp.status_code,
+                    response_body=resp.text,
+                )
     except Exception as exc:
         logger.exception("whatsapp_api_request_exception", error=str(exc))
