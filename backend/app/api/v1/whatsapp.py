@@ -111,7 +111,6 @@ async def receive_whatsapp_message(request: Request):
 
                 # 2. تسجيل رسالة المريض الواردة في السجل
                 user_msg_entry = ConversationHistory(
-                    clinic_id=clinic.id,
                     session_id=session_key,
                     role="user",
                     content=user_text,
@@ -143,7 +142,6 @@ async def receive_whatsapp_message(request: Request):
 
                 # 5. حفظ رد الـ AI في السجل
                 ai_msg_entry = ConversationHistory(
-                    clinic_id=clinic.id,
                     session_id=session_key,
                     role="assistant",
                     content=ai_reply,
@@ -177,15 +175,13 @@ async def get_recent_conversations(clinic_slug: str = "white"):
 
         paused_numbers = (clinic.settings or {}).get("paused_ai_numbers", [])
 
+        # فرز المحادثات حسب آخر ظهور بالاعتماد على session_id
         query = (
             select(
                 ConversationHistory.session_id,
                 func.max(ConversationHistory.created_at).label("last_activity"),
             )
-            .where(
-                ConversationHistory.clinic_id == clinic.id,
-                ConversationHistory.session_id.like("wa_%"),
-            )
+            .where(ConversationHistory.session_id.like("wa_%"))
             .group_by(ConversationHistory.session_id)
             .order_by(desc("last_activity"))
             .limit(50)
@@ -199,7 +195,11 @@ async def get_recent_conversations(clinic_slug: str = "white"):
                 {
                     "session_id": chat.session_id,
                     "phone_number": phone,
-                    "last_activity": chat.last_activity,
+                    "last_activity": (
+                        chat.last_activity.isoformat()
+                        if chat.last_activity
+                        else None
+                    ),
                     "is_ai_paused": phone in paused_numbers,
                 }
             )
@@ -272,7 +272,6 @@ async def send_manual_message(req: ManualMessageRequest):
         # 2. تسجيل رسالة الموظف في السجل
         session_id = f"wa_{req.phone_number}"
         staff_entry = ConversationHistory(
-            clinic_id=clinic.id,
             session_id=session_id,
             role="staff",
             content=req.message,
