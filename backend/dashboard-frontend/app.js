@@ -8,6 +8,12 @@ let servicesData = [];
 let offersData = [];
 let usersData = [];
 
+// ── WhatsApp Live Chat State ────────────────────────────────────────────────
+let rawConversations = [];
+let activeChatPhone = null;
+let activeChatIsPaused = false;
+let chatPollingInterval = null;
+
 // ── Auth Fetch Wrapper ───────────────────────────────────────────────────────
 async function adminFetch(url, options = {}) {
     const token = localStorage.getItem("access_token");
@@ -49,7 +55,7 @@ function showLoginModal() {
     }
 }
 
-async function loginUser(username, password, clinicSlug = 'al-noor11') {
+async function loginUser(username, password, clinicSlug = 'white') {
     try {
         const res = await fetch(`${API_BASE}/auth/login`, {
             method: 'POST',
@@ -88,6 +94,7 @@ async function loginUser(username, password, clinicSlug = 'al-noor11') {
 }
 
 function logoutUser(reload = true) {
+    if (chatPollingInterval) clearInterval(chatPollingInterval);
     localStorage.removeItem("access_token");
     localStorage.removeItem("user_name");
     localStorage.removeItem("user_role");
@@ -111,6 +118,11 @@ function navSwitch(secId) {
     const targetBtn = document.getElementById('btn-' + secId);
     if (targetBtn) targetBtn.classList.add('active', 'text-white');
 
+    if (secId !== 'nav-chats' && chatPollingInterval) {
+        clearInterval(chatPollingInterval);
+        chatPollingInterval = null;
+    }
+
     loadCurrentView();
 }
 
@@ -121,7 +133,7 @@ function loadCurrentView() {
     }
 
     const clinicName = localStorage.getItem("clinic_name");
-    const clinicSlug = localStorage.getItem("clinic_slug");
+    const clinicSlug = localStorage.getItem("clinic_slug") || "white";
     const userName = localStorage.getItem("user_name");
     const userRole = localStorage.getItem("user_role");
 
@@ -134,6 +146,7 @@ function loadCurrentView() {
     if (userDisplayElem && userName) userDisplayElem.innerText = `${userName} (${userRole || 'Admin'})`;
 
     if (currentNav === 'nav-today') fetchDailyAppointments(currentTargetDate);
+    if (currentNav === 'nav-chats') fetchRecentChats();
     if (currentNav === 'nav-history') fetchHistory();
     if (currentNav === 'nav-patients') fetchPatients();
     if (currentNav === 'nav-services') { fetchServices(); fetchOffers(); }
@@ -141,7 +154,229 @@ function loadCurrentView() {
     if (currentNav === 'nav-users') fetchUsers();
 }
 
-// 1. Fetch Daily Appointments
+// =============================================================================
+// 1. WhatsApp Live Chat Management
+// =============================================================================
+
+async function fetchRecentChats() {
+    const clinicSlug = localStorage.getItem("clinic_slug") || "white";
+    try {
+        const res = await adminFetch(`${API_BASE}/whatsapp/chats/recent?clinic_slug=${clinicSlug}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        rawConversations = data.conversations || [];
+        renderChatList(rawConversations);
+    } catch (e) {
+        console.error("Error fetching chats:", e);
+    }
+}
+
+function renderChatList(conversations) {
+    const listContainer = document.getElementById('chats-list');
+    if (!listContainer) return;
+    listContainer.innerHTML = '';
+
+    if (!conversations.length) {
+        listContainer.innerHTML = '<div class="p-6 text-center text-xs text-slate-500">لا توجد محادثات واتساب سابقة.</div>';
+        return;
+    }
+
+    conversations.forEach(c => {
+        const isSelected = activeChatPhone === c.phone_number;
+        const activeBg = isSelected ? 'bg-slate-700/80 border-emerald-500/50' : 'bg-slate-900/60 border-slate-700/60 hover:bg-slate-700/40';
+        const aiBadge = c.is_ai_paused 
+            ? '<span class="text-[10px] px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">AI معطل</span>' 
+            : '<span class="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">AI نشط</span>';
+
+        const lastTime = c.last_activity ? new Date(c.last_activity).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : '';
+
+        listContainer.innerHTML += `
+            <div onclick="selectChat('${c.phone_number}', ${c.is_ai_paused})" class="p-3 rounded-xl border transition cursor-pointer flex justify-between items-center ${activeBg}">
+                <div>
+                    <h4 class="font-mono font-bold text-white text-xs">${c.phone_number}</h4>
+                    <p class="text-[10px] text-slate-400 mt-1">${lastTime ? `آخر رسالة: ${lastTime}` : 'محادثة نشطة'}</p>
+                </div>
+                <div>${aiBadge}</div>
+            </div>
+        `;
+    });
+}
+
+function filterChatList() {
+    const query = document.getElementById('chat-search')?.value.trim() || "";
+    if (!query) {
+        renderChatList(rawConversations);
+        return;
+    }
+    const filtered = rawConversations.filter(c => c.phone_number.includes(query));
+    renderChatList(filtered);
+}
+
+async function selectChat(phoneNumber, isAiPaused) {
+    activeChatPhone = phoneNumber;
+    activeChatIsPaused = isAiPaused;
+
+    renderChatList(rawConversations);
+
+    const phoneElem = document.getElementById('active-chat-phone');
+    const statusElem = document.getElementById('active-chat-status');
+    const headerActions = document.getElementById('chat-header-actions');
+    const inputField = document.getElementById('manual-message-input');
+    const sendBtn = document.getElementById('manual-send-btn');
+
+    if (phoneElem) phoneElem.innerText = `+${phoneNumber}`;
+    if (headerActions) headerActions.classList.remove('hidden');
+    if (headerActions) headerActions.classList.add('flex');
+    if (inputField) inputField.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+
+    updateAIToggleButton();
+    await fetchChatMessages(phoneNumber);
+
+    if (chatPollingInterval) clearInterval(chatPollingInterval);
+    chatPollingInterval = setInterval(() => {
+        if (currentNav === 'nav-chats' && activeChatPhone) {
+            fetchChatMessages(activeChatPhone, true);
+        }
+    }, 4000);
+}
+
+function updateAIToggleButton() {
+    const btn = document.getElementById('toggle-ai-btn');
+    const statusElem = document.getElementById('active-chat-status');
+
+    if (!btn) return;
+    if (activeChatIsPaused) {
+        btn.innerHTML = '🤖 تشغيل الـ AI';
+        btn.className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition border bg-emerald-600/30 text-emerald-300 border-emerald-500/40 hover:bg-emerald-600/50';
+        if (statusElem) statusElem.innerHTML = '<span class="text-rose-400 font-bold">وضع التدخل اليدوي (AI معطل لهذه المحادثة)</span>';
+    } else {
+        btn.innerHTML = '⏸️ إيقاف الـ AI (تدخل يدوي)';
+        btn.className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition border bg-rose-600/30 text-rose-300 border-rose-500/40 hover:bg-rose-600/50';
+        if (statusElem) statusElem.innerHTML = '<span class="text-emerald-400 font-bold">الذكاء الاصطناعي يرد تلقائياً</span>';
+    }
+}
+
+async function toggleAIChat() {
+    if (!activeChatPhone) return;
+    const clinicSlug = localStorage.getItem("clinic_slug") || "white";
+    const nextState = !activeChatIsPaused;
+
+    try {
+        const res = await adminFetch(`${API_BASE}/whatsapp/chats/toggle-ai`, {
+            method: 'POST',
+            body: JSON.stringify({
+                phone_number: activeChatPhone,
+                is_paused: nextState,
+                clinic_slug: clinicSlug
+            })
+        });
+
+        if (res.ok) {
+            activeChatIsPaused = nextState;
+            updateAIToggleButton();
+            fetchRecentChats();
+        } else {
+            alert("حدث خطأ أثناء تغيير وضع الـ AI.");
+        }
+    } catch (e) {
+        console.error("Toggle AI error:", e);
+    }
+}
+
+async function fetchChatMessages(phoneNumber, silent = false) {
+    try {
+        const res = await adminFetch(`${API_BASE}/whatsapp/chats/${phoneNumber}/messages`);
+        if (!res.ok) return;
+        const data = await res.json();
+        renderMessages(data.messages || [], silent);
+    } catch (e) {
+        console.error("Fetch messages error:", e);
+    }
+}
+
+function renderMessages(messages, silent = false) {
+    const container = document.getElementById('messages-container');
+    if (!container) return;
+
+    if (!messages.length) {
+        container.innerHTML = '<div class="p-6 text-center text-xs text-slate-500">لا توجد رسائل مسجلة بعد.</div>';
+        return;
+    }
+
+    const previousScrollHeight = container.scrollHeight;
+
+    container.innerHTML = messages.map(m => {
+        const isUser = m.role === 'user';
+        const isStaff = m.role === 'staff';
+
+        let bubbleClass = 'bg-slate-800 text-slate-200 border-slate-700 ml-auto';
+        let senderTag = '👤 المريض';
+
+        if (!isUser) {
+            if (isStaff) {
+                bubbleClass = 'bg-emerald-950/70 text-emerald-200 border-emerald-700/60 mr-auto';
+                senderTag = '👨‍💼 موظف العيادة';
+            } else {
+                bubbleClass = 'bg-blue-950/70 text-blue-200 border-blue-700/60 mr-auto';
+                senderTag = '🤖 مساعد العيادة الذكي';
+            }
+        }
+
+        const timeStr = m.created_at ? new Date(m.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : '';
+
+        return `
+            <div class="flex flex-col ${isUser ? 'items-start' : 'items-end'} max-w-[85%] ${isUser ? '' : 'self-end'}">
+                <div class="text-[10px] text-slate-400 mb-1 px-1">${senderTag} • ${timeStr}</div>
+                <div class="p-3 rounded-2xl border text-xs leading-relaxed whitespace-pre-wrap ${bubbleClass}">
+                    ${m.content}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    if (!silent || container.scrollTop + container.clientHeight >= previousScrollHeight - 50) {
+        container.scrollTop = container.scrollHeight;
+    }
+}
+
+async function sendStaffReply(event) {
+    event.preventDefault();
+    if (!activeChatPhone) return;
+
+    const input = document.getElementById('manual-message-input');
+    const message = input?.value.trim();
+    if (!message) return;
+
+    const clinicSlug = localStorage.getItem("clinic_slug") || "white";
+
+    input.value = '';
+
+    try {
+        const res = await adminFetch(`${API_BASE}/whatsapp/chats/send-manual`, {
+            method: 'POST',
+            body: JSON.stringify({
+                phone_number: activeChatPhone,
+                message: message,
+                clinic_slug: clinicSlug
+            })
+        });
+
+        if (res.ok) {
+            await fetchChatMessages(activeChatPhone);
+            fetchRecentChats();
+        } else {
+            alert("فشل إرسال الرسالة إلى واتساب المريض.");
+        }
+    } catch (e) {
+        alert("تعذر الاتصال بالخادم.");
+    }
+}
+
+// =============================================================================
+// 2. Daily Appointments
+// =============================================================================
+
 async function fetchDailyAppointments(targetDateStr = null) {
     try {
         let url = `${API_BASE}/admin/appointments/daily`;
@@ -281,7 +516,10 @@ async function updateStatusWithConfirm(apptId, newStatus, patientName) {
     }
 }
 
-// 2. Fetch History Log
+// =============================================================================
+// 3. History Log
+// =============================================================================
+
 async function fetchHistory() {
     const dFrom = document.getElementById('hist-date-from')?.value;
     const dTo = document.getElementById('hist-date-to')?.value;
@@ -373,7 +611,10 @@ function closeAuditModal() {
     }
 }
 
-// 3. Patients Management
+// =============================================================================
+// 4. Patients & Blacklist
+// =============================================================================
+
 async function fetchPatients() {
     try {
         const res = await adminFetch(`${API_BASE}/admin/patients?_t=${new Date().getTime()}`);
@@ -400,7 +641,6 @@ async function fetchPatients() {
 
         navPatientsSec.innerHTML = `
             <div class="space-y-8">
-                <!-- 1. Active Patients Table -->
                 <div>
                     <div class="flex items-center justify-between mb-4">
                         <h2 class="text-xl font-bold text-white flex items-center gap-2">
@@ -438,7 +678,6 @@ async function fetchPatients() {
                     </div>
                 </div>
 
-                <!-- 2. Blacklisted Patients Table -->
                 <div>
                     <div class="flex items-center justify-between mb-4">
                         <h2 class="text-xl font-bold text-rose-400 flex items-center gap-2">
@@ -531,7 +770,10 @@ async function resetNoShowCount(pId) {
     } catch (e) { alert("تعذر الاتصال بالخادم."); }
 }
 
-// 4. Services & Offers CRUD
+// =============================================================================
+// 5. Services & Offers CRUD
+// =============================================================================
+
 async function fetchServices() {
     try {
         const res = await adminFetch(`${API_BASE}/admin/services`);
@@ -581,7 +823,6 @@ function renderServicesTable() {
     });
 }
 
-// ── Offers Management Integration
 async function fetchOffers() {
     try {
         const res = await adminFetch(`${API_BASE}/admin/offers`);
@@ -791,7 +1032,10 @@ async function deleteService(serviceId, serviceName) {
     } catch (e) { alert("حدث خطأ في الخادم."); }
 }
 
-// 5. Clinic Settings Fetch & Save
+// =============================================================================
+// 6. Clinic Settings
+// =============================================================================
+
 async function fetchClinicSettings() {
     try {
         const res = await adminFetch(`${API_BASE}/admin/clinic/config`);
@@ -861,7 +1105,10 @@ async function saveClinicSettings(event) {
     }
 }
 
-// 6. User Management (Admin Only)
+// =============================================================================
+// 7. User Management (Admin Only)
+// =============================================================================
+
 async function fetchUsers() {
     try {
         const res = await adminFetch(`${API_BASE}/admin/users`);

@@ -8,7 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen flex">
+<body class="bg-slate-900 text-slate-100 min-h-screen flex font-['Tajawal']">
 
     <!-- LOGIN OVERLAY MODAL -->
     <div id="login-modal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 z-50 hidden">
@@ -24,7 +24,7 @@
             <form onsubmit="handleLoginSubmit(event)" class="space-y-4 text-xs">
                 <div>
                     <label class="block text-slate-300 font-bold mb-1">معرف العيادة (Clinic Slug)</label>
-                    <input type="text" id="login-clinic-slug" required value="al-noor11" placeholder="مثال: al-noor11" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500">
+                    <input type="text" id="login-clinic-slug" required value="white" placeholder="مثال: white" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500">
                 </div>
                 <div>
                     <label class="block text-slate-300 font-bold mb-1">اسم المستخدم</label>
@@ -59,6 +59,9 @@
             <nav class="space-y-2">
                 <button onclick="navSwitch('nav-today')" id="btn-nav-today" class="sidebar-btn active w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition">
                     📅 قائمة الانتظار اليومية (Today)
+                </button>
+                <button onclick="navSwitch('nav-chats')" id="btn-nav-chats" class="sidebar-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition text-slate-400 hover:bg-slate-700/50 hover:text-white">
+                    💬 محادثات واتساب الحية (Live Chat)
                 </button>
                 <button onclick="navSwitch('nav-history')" id="btn-nav-history" class="sidebar-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs transition text-slate-400 hover:bg-slate-700/50 hover:text-white">
                     📜 سجل كافة الحجوزات (History)
@@ -197,7 +200,71 @@
             </div>
         </section>
 
-        <!-- SECTION 2: APPOINTMENT HISTORY -->
+        <!-- SECTION 2: WHATSAPP LIVE CHATS (NEW) -->
+        <section id="nav-chats" class="nav-section hidden">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6 flex justify-between items-center">
+                <div>
+                    <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                        💬 محادثات واتساب الحية (Live WhatsApp Chats)
+                    </h2>
+                    <p class="text-xs text-slate-400 mt-0.5">متابعة رسائل المرضى والرد اليدوي أو التحكم في وضع الذكاء الاصطناعي</p>
+                </div>
+                <button onclick="fetchRecentChats()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-2 rounded-xl text-xs transition border border-slate-600 flex items-center gap-1">
+                    🔄 تحديث المحادثات
+                </button>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[650px]">
+                <!-- Conversations List -->
+                <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 flex flex-col h-full shadow-xl">
+                    <div class="mb-3">
+                        <input id="chat-search" type="text" oninput="filterChatList()" placeholder="بحث برقم الهاتف..." class="w-full bg-slate-900 border border-slate-700 text-xs px-3 py-2.5 rounded-xl text-slate-200 focus:outline-none focus:border-emerald-500">
+                    </div>
+                    <div id="chats-list" class="flex-1 overflow-y-auto space-y-2 pr-1">
+                        <!-- Chat Items Loaded Here -->
+                    </div>
+                </div>
+
+                <!-- Chat Messages & Reply Area -->
+                <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-2xl flex flex-col h-full shadow-xl overflow-hidden">
+                    <!-- Chat Header -->
+                    <div id="chat-active-header" class="p-4 bg-slate-900/80 border-b border-slate-700 flex justify-between items-center">
+                        <div class="flex items-center gap-3">
+                            <div class="w-9 h-9 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center font-bold">
+                                👤
+                            </div>
+                            <div>
+                                <h3 id="active-chat-phone" class="text-sm font-bold text-white font-mono">اختر محادثة من القائمة</h3>
+                                <p id="active-chat-status" class="text-[11px] text-slate-400">لا توجد محادثة محددة</p>
+                            </div>
+                        </div>
+
+                        <div id="chat-header-actions" class="hidden items-center gap-2">
+                            <button id="toggle-ai-btn" onclick="toggleAIChat()" class="px-3 py-1.5 rounded-xl text-xs font-bold transition border">
+                                🤖 تفعيل/إيقاف AI
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Messages Stream -->
+                    <div id="messages-container" class="flex-1 p-4 overflow-y-auto space-y-3 bg-slate-900/40">
+                        <div class="flex items-center justify-center h-full text-xs text-slate-500">
+                            قم باختيار مريض من القائمة الجانبية لعرض سجل المحادثة 💬
+                        </div>
+                    </div>
+
+                    <!-- Message Input Box -->
+                    <form id="chat-reply-form" onsubmit="sendStaffReply(event)" class="p-3 bg-slate-900 border-t border-slate-700 flex items-center gap-2">
+                        <input type="text" id="manual-message-input" disabled placeholder="اكتب ردك اليدوي للمريض هنا..." class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50">
+                        <button type="submit" id="manual-send-btn" disabled class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition shadow flex items-center gap-1">
+                            إرسال 📤
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION 3: APPOINTMENT HISTORY -->
         <section id="nav-history" class="nav-section hidden">
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6">
                 <h2 class="text-lg font-bold text-white mb-4">📜 سجل الحجوزات المتقدم (Appointment History)</h2>
@@ -255,7 +322,7 @@
             </div>
         </section>
 
-        <!-- SECTION 3: PATIENTS & BLACKLIST -->
+        <!-- SECTION 4: PATIENTS & BLACKLIST -->
         <section id="nav-patients" class="nav-section hidden">
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6">
                 <h2 class="text-lg font-bold text-rose-400">إدارة البلاك ليست والمحظورين</h2>
@@ -276,7 +343,7 @@
             </div>
         </section>
 
-        <!-- SECTION 4: SERVICES & OFFERS MANAGEMENT -->
+        <!-- SECTION 5: SERVICES & OFFERS MANAGEMENT -->
         <section id="nav-services" class="nav-section hidden">
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6 flex justify-between items-center">
                 <div>
@@ -305,7 +372,7 @@
             </div>
         </section>
 
-        <!-- SECTION 5: CLINIC SETTINGS -->
+        <!-- SECTION 6: CLINIC SETTINGS -->
         <section id="nav-settings" class="nav-section hidden">
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6">
                 <h2 class="text-lg font-bold text-white mb-1">⚙️ إعدادات العيادة وسياستها الحاكمة</h2>
@@ -400,7 +467,7 @@
             </form>
         </section>
 
-        <!-- SECTION 6: USER MANAGEMENT -->
+        <!-- SECTION 7: USER MANAGEMENT -->
         <section id="nav-users" class="nav-section hidden">
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 mb-6 flex justify-between items-center">
                 <div>
@@ -531,7 +598,7 @@
 
         async function handleLoginSubmit(e) {
             e.preventDefault();
-            const clinicSlug = document.getElementById("login-clinic-slug").value.trim() || "al-noor11";
+            const clinicSlug = document.getElementById("login-clinic-slug").value.trim() || "white";
             const username = document.getElementById("login-username").value.trim();
             const password = document.getElementById("login-password").value.trim();
             await loginUser(username, password, clinicSlug);

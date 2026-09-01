@@ -3,18 +3,37 @@ from __future__ import annotations
 import httpx
 import structlog
 from fastapi import APIRouter, Query, Request, Response
-from sqlalchemy import or_, select
+from pydantic import BaseModel
+from sqlalchemy import desc, func, or_, select
 
 from app.agents.dental_agent import DentalAgent
 from app.database.base import AsyncSessionFactory
 from app.models.clinic import Clinic
+from app.models.conversation_history import ConversationHistory
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/whatsapp", tags=["WhatsApp Webhook"])
+router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
 
-# كود التحقق السري المشترك مع Meta
 WHATSAPP_VERIFY_TOKEN = "smilecare_whatsapp_secret_token_2026"
+
+
+# ── Schemas ──────────────────────────────────────────────────────────────────
+
+
+class ManualMessageRequest(BaseModel):
+    phone_number: str
+    message: str
+    clinic_slug: str = "white"
+
+
+class ToggleAIRequest(BaseModel):
+    phone_number: str
+    is_paused: bool
+    clinic_slug: str = "white"
+
+
+# ── Webhook Verification & Receiving ─────────────────────────────────────────
 
 
 @router.get("/webhook")
@@ -32,7 +51,7 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def receive_whatsapp_message(request: Request):
-    """استقبال رسائل المرضى القادمة من واتساب وتوجيهها ديناميكياً للعيادة المناسبة."""
+    """استقبال رسائل المرضى القادمة من واتساب، حفظها، والرد بالذكاء الاصطناعي إذا لم يتم إيقافه."""
     payload = await request.json()
 
     for entry in payload.get("entry", []):
@@ -41,7 +60,6 @@ async def receive_whatsapp_message(request: Request):
             metadata = val.get("metadata", {})
             phone_number_id = metadata.get("phone_number_id")
 
-            # استخراج الرسائل وتجاهل التحديثات الأخرى
             messages = val.get("messages", [])
             if not messages:
                 continue
@@ -50,14 +68,14 @@ async def receive_whatsapp_message(request: Request):
             if msg.get("type") != "text":
                 continue
 
-            sender_phone = msg.get("from")
+            sender_phone = str(msg.get("from"))
             user_text = msg.get("text", {}).get("body", "").strip()
 
             if not user_text or not phone_number_id:
                 continue
 
             async with AsyncSessionFactory() as db:
-                # 1. البحث الديناميكي: مطابقة phone_number_id أو السقوط على عيادة white
+                # 1. مطابقة العيادة
                 stmt = (
                     select(Clinic)
                     .where(
@@ -82,41 +100,216 @@ async def receive_whatsapp_message(request: Request):
 
                 if not clinic:
                     logger.warning(
-                        "clinic_not_found_for_phone_id",
-                        phone_number_id=phone_number_id,
+                        "clinic_not_found", phone_number_id=phone_number_id
                     )
                     continue
 
                 clinic_settings = clinic.settings or {}
                 access_token = clinic_settings.get("whatsapp_access_token")
 
-                if not access_token:
-                    logger.warning(
-                        "missing_whatsapp_access_token",
-                        clinic_slug=clinic.slug,
-                        phone_number_id=phone_number_id,
+                session_key = f"wa_{sender_phone}"
+
+                # 2. تسجيل رسالة المريض الواردة في السجل
+                user_msg_entry = ConversationHistory(
+                    clinic_id=clinic.id,
+                    session_id=session_key,
+                    role="user",
+                    content=user_text,
+                )
+                db.add(user_msg_entry)
+                await db.commit()
+
+                # 3. التحقق هل الـ AI متوقف يدوياً لهذه المحادثة
+                paused_numbers = clinic_settings.get("paused_ai_numbers", [])
+                if sender_phone in paused_numbers:
+                    logger.info(
+                        "ai_reply_skipped_manual_mode", phone=sender_phone
                     )
                     continue
 
-                # 2. تشغيل وكيل الذكاء الاصطناعي الخاص بالعيادة
-                agent = DentalAgent(db_session=db, clinic_id=clinic.id)
-                session_key = f"wa_{sender_phone}"
+                if not access_token:
+                    logger.warning(
+                        "missing_whatsapp_access_token", clinic_slug=clinic.slug
+                    )
+                    continue
 
+                # 4. تشغيل الـ AI Agent
+                agent = DentalAgent(db_session=db, clinic_id=clinic.id)
                 ai_reply = await agent.run(
                     message=user_text,
                     session_id=session_key,
                     clinic_id=clinic.id,
                 )
 
-                # 3. إرسال الرد الفوري إلى المريض
+                # 5. حفظ رد الـ AI في السجل
+                ai_msg_entry = ConversationHistory(
+                    clinic_id=clinic.id,
+                    session_id=session_key,
+                    role="assistant",
+                    content=ai_reply,
+                )
+                db.add(ai_msg_entry)
+                await db.commit()
+
+                # 6. إرسال الرد للمريض على واتساب
                 await send_whatsapp_message(
                     phone_number_id=str(phone_number_id),
-                    recipient_phone=str(sender_phone),
+                    recipient_phone=sender_phone,
                     message_text=ai_reply,
                     access_token=access_token,
                 )
 
     return {"status": "success"}
+
+
+# ── Dashboard Chat Management Endpoints ─────────────────────────────────────
+
+
+@router.get("/chats/recent")
+async def get_recent_conversations(clinic_slug: str = "white"):
+    """جلب قائمة بآخر المحادثات المفتوحة مع المرضى وحالة الـ AI."""
+    async with AsyncSessionFactory() as db:
+        stmt = select(Clinic).where(Clinic.slug == clinic_slug).limit(1)
+        res = await db.execute(stmt)
+        clinic = res.scalar_one_or_none()
+        if not clinic:
+            return {"conversations": []}
+
+        paused_numbers = (clinic.settings or {}).get("paused_ai_numbers", [])
+
+        query = (
+            select(
+                ConversationHistory.session_id,
+                func.max(ConversationHistory.created_at).label("last_activity"),
+            )
+            .where(
+                ConversationHistory.clinic_id == clinic.id,
+                ConversationHistory.session_id.like("wa_%"),
+            )
+            .group_by(ConversationHistory.session_id)
+            .order_by(desc("last_activity"))
+            .limit(50)
+        )
+
+        chats = (await db.execute(query)).all()
+        result = []
+        for chat in chats:
+            phone = chat.session_id.replace("wa_", "")
+            result.append(
+                {
+                    "session_id": chat.session_id,
+                    "phone_number": phone,
+                    "last_activity": chat.last_activity,
+                    "is_ai_paused": phone in paused_numbers,
+                }
+            )
+
+        return {"conversations": result}
+
+
+@router.get("/chats/{phone_number}/messages")
+async def get_chat_history(phone_number: str):
+    """جلب سجل الرسائل بالكامل لمحادثة معينة."""
+    session_id = (
+        f"wa_{phone_number}"
+        if not phone_number.startswith("wa_")
+        else phone_number
+    )
+
+    async with AsyncSessionFactory() as db:
+        stmt = (
+            select(ConversationHistory)
+            .where(ConversationHistory.session_id == session_id)
+            .order_by(ConversationHistory.created_at.asc())
+        )
+        res = await db.execute(stmt)
+        messages = res.scalars().all()
+
+        return {
+            "messages": [
+                {
+                    "id": str(m.id),
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": (
+                        m.created_at.isoformat() if m.created_at else None
+                    ),
+                }
+                for m in messages
+            ]
+        }
+
+
+@router.post("/chats/send-manual")
+async def send_manual_message(req: ManualMessageRequest):
+    """إرسال رسالة يدوية من موظف العيادة مباشرة إلى واتساب المريض."""
+    async with AsyncSessionFactory() as db:
+        stmt = select(Clinic).where(Clinic.slug == req.clinic_slug).limit(1)
+        res = await db.execute(stmt)
+        clinic = res.scalar_one_or_none()
+
+        if not clinic:
+            return {"status": "error", "message": "Clinic not found"}
+
+        clinic_settings = clinic.settings or {}
+        access_token = clinic_settings.get("whatsapp_access_token")
+        phone_id = clinic_settings.get("whatsapp_phone_number_id")
+
+        if not access_token or not phone_id:
+            return {
+                "status": "error",
+                "message": "Missing WhatsApp credentials",
+            }
+
+        # 1. إرسال الرسالة إلى واتساب
+        await send_whatsapp_message(
+            phone_number_id=phone_id,
+            recipient_phone=req.phone_number,
+            message_text=req.message,
+            access_token=access_token,
+        )
+
+        # 2. تسجيل رسالة الموظف في السجل
+        session_id = f"wa_{req.phone_number}"
+        staff_entry = ConversationHistory(
+            clinic_id=clinic.id,
+            session_id=session_id,
+            role="staff",
+            content=req.message,
+        )
+        db.add(staff_entry)
+        await db.commit()
+
+        return {"status": "success", "message": "Sent successfully"}
+
+
+@router.post("/chats/toggle-ai")
+async def toggle_ai_mode(req: ToggleAIRequest):
+    """إيقاف أو تفعيل الرد التلقائي للـ AI لمحادثة معينة."""
+    async with AsyncSessionFactory() as db:
+        stmt = select(Clinic).where(Clinic.slug == req.clinic_slug).limit(1)
+        res = await db.execute(stmt)
+        clinic = res.scalar_one_or_none()
+
+        if not clinic:
+            return {"status": "error", "message": "Clinic not found"}
+
+        settings_dict = dict(clinic.settings or {})
+        paused_list = set(settings_dict.get("paused_ai_numbers", []))
+
+        if req.is_paused:
+            paused_list.add(req.phone_number)
+        else:
+            paused_list.discard(req.phone_number)
+
+        settings_dict["paused_ai_numbers"] = list(paused_list)
+        clinic.settings = settings_dict
+        await db.commit()
+
+        return {"status": "success", "is_paused": req.is_paused}
+
+
+# ── Meta API Helper ──────────────────────────────────────────────────────────
 
 
 async def send_whatsapp_message(
@@ -125,7 +318,7 @@ async def send_whatsapp_message(
     message_text: str,
     access_token: str,
 ):
-    """إرسال رد الذكاء الاصطناعي عبر Meta Graph API."""
+    """إرسال الرسالة عبر WhatsApp Cloud API."""
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -143,7 +336,7 @@ async def send_whatsapp_message(
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code == 200:
                 logger.info(
-                    "whatsapp_reply_sent_successfully",
+                    "whatsapp_message_sent",
                     to=recipient_phone,
                     phone_number_id=phone_number_id,
                 )
