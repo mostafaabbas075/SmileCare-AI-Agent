@@ -1,27 +1,32 @@
-"""
-Multi-Tenant Dental Agent (Virtual Receptionist).
+"""Multi-Tenant Dental Agent (Virtual Receptionist).
 
-Handles patient interactions, intent routing, dynamic clinic context retrieval,
-and appointment booking strictly isolated per clinic:
-- Real-Time Live Sync with Clinic Dashboard (Settings, Working Hours, Capacity, GPS).
-- Dynamic Live Services & Pricing Context from PostgreSQL.
-- Dynamic Active Offers & Discounts synced live with Clinic Dashboard Settings.
-- Anti-Hallucination Guardrails for Dates, Times, Prices, and Offers.
-- Tenant Isolation & In-Memory Conversation Management.
+Handles patient interactions, intent routing, dynamic clinic context
+retrieval, and appointment booking strictly isolated per clinic: - Real-Time
+Live Sync with Clinic Dashboard (Settings, Working Hours, Capacity, GPS). -
+Dynamic Live Services & Pricing Context from PostgreSQL. - Dynamic Active Offers
+& Discounts synced live with Clinic Dashboard Settings. - Anti-Hallucination
+Guardrails for Dates, Times, Prices, and Offers. - Tenant Isolation & In-Memory
+Conversation Management.
 """
 
 from __future__ import annotations
 
-import uuid
 from datetime import date as date_cls, datetime, time as time_cls
+import re
 from typing import Any, Dict, List
+import uuid
 
-import structlog
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -30,8 +35,6 @@ from app.models.clinic import Clinic
 from app.models.doctor import Doctor
 from app.models.patient import Patient
 from app.models.service import Service
-from app.rag.qdrant_retriever import ClinicRetriever
-from app.rag.sentence_embedder import SentenceTransformerEmbedder
 from app.schemas.appointment import AppointmentCreate
 from app.services.appointment_service import appointment_service
 from app.services.intent_router import intent_router
@@ -68,6 +71,7 @@ ARABIC_DAY_NAMES = {
 
 
 class DentalAgent:
+
     def __init__(
         self,
         db_session: AsyncSession,
@@ -78,7 +82,9 @@ class DentalAgent:
         self.clinic_id: uuid.UUID | None = (
             uuid.UUID(str(clinic_id)) if clinic_id else None
         )
-        self.clinic_slug: str | None = clinic_slug.strip().lower() if clinic_slug else None
+        self.clinic_slug: str | None = (
+            clinic_slug.strip().lower() if clinic_slug else None
+        )
 
         self.llm = ChatGoogleGenerativeAI(
             model=settings.GEMINI_MODEL,
@@ -86,12 +92,7 @@ class DentalAgent:
             google_api_key=settings.GOOGLE_API_KEY,
         )
 
-        self.llm_with_tools = self.llm.bind_tools(
-            [self.book_dental_appointment]
-        )
-
-        self.embedder = SentenceTransformerEmbedder()
-        self.retriever = ClinicRetriever(embedder=self.embedder)
+        self.llm_with_tools = self.llm.bind_tools([self.book_dental_appointment])
 
     async def _resolve_clinic(self) -> Clinic | None:
         """جلب بيانات العيادة الحالية من قاعدة البيانات."""
@@ -111,7 +112,7 @@ class DentalAgent:
                 self.clinic_id = clinic.id
                 return clinic
 
-        stmt = select(Clinic).where(Clinic.is_active == True).limit(1)
+        stmt = select(Clinic).where(Clinic.is_active.is_(True)).limit(1)
         res = await self.db.execute(stmt)
         clinic = res.scalar_one_or_none()
         if clinic:
@@ -136,11 +137,23 @@ class DentalAgent:
             return time_str
 
     def _get_live_clinic_config_context(self, clinic: Clinic | None) -> str:
-        cfg = clinic.settings if clinic and clinic.settings else DEFAULT_FALLBACK_SETTINGS
+        cfg = (
+            clinic.settings
+            if clinic and clinic.settings
+            else DEFAULT_FALLBACK_SETTINGS
+        )
 
         working_indices = cfg.get("working_days", [5, 6, 0, 1, 2])
-        working_days_list = [ARABIC_DAY_NAMES[i] for i in working_indices if i in ARABIC_DAY_NAMES]
-        working_days_str = "، ".join(working_days_list) if working_days_list else "كل أيام الأسبوع"
+        working_days_list = [
+            ARABIC_DAY_NAMES[i]
+            for i in working_indices
+            if i in ARABIC_DAY_NAMES
+        ]
+        working_days_str = (
+            "، ".join(working_days_list)
+            if working_days_list
+            else "كل أيام الأسبوع"
+        )
 
         capacity = cfg.get("daily_capacity", 10)
         open_time_raw = cfg.get("opening_time", "16:00")
@@ -150,18 +163,18 @@ class DentalAgent:
 
         return (
             f"📅 أيام وساعات العمل المعتمدة بالداشبورد:\n"
-            f"- أيام العمل المتاحة للحجز: **({working_days_str})**.\n"
-            f"- مواعيد وساعات الاستقبال: من الساعة **{open_time_ar}** حتى الساعة **{close_time_ar}**.\n"
+            f"- أيام العمل المتاحة للحجز: *({working_days_str})*.\n"
+            f"- مواعيد وساعات الاستقبال: من الساعة *{open_time_ar}* حتى الساعة *{close_time_ar}*.\n"
             f"- الحد الأقصى لسعة الحجوزات اليومية: {capacity} مريض.\n"
-            f"- قاعدة الحضور: الحجز لليوم، والدخول بأسبقية الحضور خلال الساعات المحددة أعلاه.\n"
+            f"- قاعدة الحضور: الدخول بأسبقية الحضور خلال الساعات المحددة أعلاه.\n"
             f"⛔ تنبيه حاسم: يمنع منعاً باتاً اقتراح أو قبول أي يوم غير مذكور في قائمة الأيام أعلاه ({working_days_str})."
         )
 
     async def _get_live_services_context(self) -> str:
         try:
             stmt = select(Service).where(
-                Service.is_active == True,
-                or_(Service.is_deleted == False, Service.is_deleted.is_(None)),
+                Service.is_active.is_(True),
+                or_(Service.is_deleted.is_(False), Service.is_deleted.is_(None)),
             )
             if self.clinic_id:
                 stmt = stmt.where(Service.clinic_id == self.clinic_id)
@@ -184,7 +197,11 @@ class DentalAgent:
             return "\n".join(context_lines)
         except Exception as e:
             await self.db.rollback()
-            logger.error("live_services_fetch_failed", error=str(e), clinic_id=str(self.clinic_id))
+            logger.error(
+                "live_services_fetch_failed",
+                error=str(e),
+                clinic_id=str(self.clinic_id),
+            )
             return "الأسعار الحالية متوفرة ومحدثة لدى لوحة التحكم والاستقبال."
 
     def _get_live_offers_context(self, clinic: Clinic | None) -> str:
@@ -196,8 +213,12 @@ class DentalAgent:
 
         all_offers = clinic.settings.get("offers", [])
         active_offers = [
-            o for o in all_offers
-            if o.get("is_active") is True or o.get("is_active") == "true" or str(o.get("is_active", "")).lower() == "true" or "is_active" not in o
+            o
+            for o in all_offers
+            if o.get("is_active") is True
+            or o.get("is_active") == "true"
+            or str(o.get("is_active", "")).lower() == "true"
+            or "is_active" not in o
         ]
 
         if not active_offers:
@@ -208,13 +229,27 @@ class DentalAgent:
 
         lines = [
             "🎁 قائمة العروض والخصومات الخاصة النشطة في لوحة التحكم (الداشبورد) حالياً:",
-            "⚠️ تعليمات حاسمة: عندما يسأل المريض عن العروض أو الخصومات، قدم له هذه العروض بدقة واذكر السعر قبل وبعد الخصم:"
+            "⚠️ تعليمات حاسمة: عندما يسأل المريض عن العروض أو الخصومات، قدم له هذه العروض بدقة واذكر السعر قبل وبعد الخصم:",
         ]
 
         for idx, o in enumerate(active_offers, 1):
-            title = o.get("title") or o.get("name") or o.get("offer_title") or f"عرض خاص {idx}"
-            service = o.get("service_name") or o.get("service") or o.get("related_service") or "خدمات الأسنان"
-            orig_price = o.get("original_price") or o.get("originalPrice") or o.get("price")
+            title = (
+                o.get("title")
+                or o.get("name")
+                or o.get("offer_title")
+                or f"عرض خاص {idx}"
+            )
+            service = (
+                o.get("service_name")
+                or o.get("service")
+                or o.get("related_service")
+                or "خدمات الأسنان"
+            )
+            orig_price = (
+                o.get("original_price")
+                or o.get("originalPrice")
+                or o.get("price")
+            )
             new_price = (
                 o.get("discounted_price")
                 or o.get("discount_price")
@@ -231,7 +266,9 @@ class DentalAgent:
                 price_str = f"بسعر {new_price} ج.م"
 
             detail_str = f" (التفاصيل: {desc})" if desc else ""
-            lines.append(f"{idx}. عرض **{title}** على خدمة ({service}): {price_str}{detail_str}.")
+            lines.append(
+                f"{idx}. عرض *{title}* على خدمة ({service}): {price_str}{detail_str}."
+            )
 
         return "\n".join(lines)
 
@@ -260,13 +297,13 @@ class DentalAgent:
             except ValueError:
                 appointment_time = time_cls(16, 0)
 
-            phone_number = phone_number.strip()
+            clean_phone = re.sub(r"\D", "", phone_number.replace("wa_", "").strip())
             name_parts = patient_name.strip().split()
             first_name = name_parts[0] if name_parts else "مريض"
             last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else "جديد"
 
             stmt_patient = select(Patient).where(
-                Patient.phone == phone_number,
+                Patient.phone == clean_phone,
                 Patient.clinic_id == clinic.id,
             )
             res_p = await self.db.execute(stmt_patient)
@@ -277,7 +314,7 @@ class DentalAgent:
                     clinic_id=clinic.id,
                     first_name=first_name,
                     last_name=last_name,
-                    phone=phone_number,
+                    phone=clean_phone,
                 )
                 self.db.add(patient)
                 await self.db.flush()
@@ -299,8 +336,8 @@ class DentalAgent:
             stmt_serv = select(Service).where(
                 Service.clinic_id == clinic.id,
                 Service.name.ilike(f"%{service_name.strip()}%"),
-                Service.is_active == True,
-                or_(Service.is_deleted == False, Service.is_deleted.is_(None)),
+                Service.is_active.is_(True),
+                or_(Service.is_deleted.is_(False), Service.is_deleted.is_(None)),
             )
             res_s = await self.db.execute(stmt_serv)
             service = res_s.scalar_one_or_none()
@@ -308,8 +345,8 @@ class DentalAgent:
             if not service:
                 stmt_fallback = select(Service).where(
                     Service.clinic_id == clinic.id,
-                    Service.is_active == True,
-                    or_(Service.is_deleted == False, Service.is_deleted.is_(None)),
+                    Service.is_active.is_(True),
+                    or_(Service.is_deleted.is_(False), Service.is_deleted.is_(None)),
                 ).limit(1)
                 res_fallback = await self.db.execute(stmt_fallback)
                 service = res_fallback.scalar_one_or_none()
@@ -327,12 +364,22 @@ class DentalAgent:
 
             all_offers = (clinic.settings or {}).get("offers", [])
             active_offers = [
-                o for o in all_offers
-                if o.get("is_active") is True or o.get("is_active") == "true" or "is_active" not in o
+                o
+                for o in all_offers
+                if o.get("is_active") is True
+                or o.get("is_active") == "true"
+                or "is_active" not in o
             ]
 
             applied_offer = next(
-                (o for o in active_offers if (o.get("service_name") or o.get("title", "")).strip().lower() in service.name.lower()),
+                (
+                    o
+                    for o in active_offers
+                    if (o.get("service_name") or o.get("title", ""))
+                    .strip()
+                    .lower()
+                    in service.name.lower()
+                ),
                 None,
             )
 
@@ -344,7 +391,11 @@ class DentalAgent:
                     or applied_offer.get("offerPrice")
                 )
                 final_price = discount_price if discount_price else service.price
-                offer_title = applied_offer.get("title") or applied_offer.get("name") or "عرض خاص"
+                offer_title = (
+                    applied_offer.get("title")
+                    or applied_offer.get("name")
+                    or "عرض خاص"
+                )
                 booking_note = f"السن: {patient_age} | السعر: {final_price} ج.م (تطبيق عرض: {offer_title})"
                 price_message = f"{final_price} ج.م (شامل الخصم والعرض)"
             else:
@@ -373,11 +424,11 @@ class DentalAgent:
                 f"اسم المريض: {patient.first_name} {patient.last_name}\n"
                 f"رقم الهاتف: {patient.phone}\n"
                 f"الخدمة: {service.name}\n"
-                f"السعر المطلوب: {price_message}\n"
+                f"السعر: {price_message}\n"
                 f"الطبيب: {doctor.name}\n"
                 f"التاريخ: {appointment_date}\n"
                 f"رقم الحجز: #{str(appointment.id)[:8].upper()}\n"
-                "الحالة: مؤكد (الدخول بأسبقية الحضور خلال ساعات العمل الرسمية)."
+                "الدخول بأسبقية الحضور خلال ساعات العمل الرسمية."
             )
 
         except ConflictError as exc:
@@ -394,7 +445,11 @@ class DentalAgent:
 
         except Exception as exc:
             await self.db.rollback()
-            logger.exception("appointment_booking_failed", error=str(exc), clinic_id=str(self.clinic_id))
+            logger.exception(
+                "appointment_booking_failed",
+                error=str(exc),
+                clinic_id=str(self.clinic_id),
+            )
             return "حدث خطأ غير متوقع أثناء الحجز. يرجى المحاولة مرة أخرى."
 
     async def run(
@@ -403,23 +458,31 @@ class DentalAgent:
         session_id: str,
         clinic_id: uuid.UUID | str | None = None,
         clinic_slug: str | None = None,
+        patient_phone: str | None = None,
     ) -> str:
-        """تشغيل محادثة البوت وربطها الفوري بأحدث بيانات الداشبورد للعيادة المستهدفة."""
+        """تشغيل محادثة البوت بدون تأخير الـ RAG ومع الاستخراج التلقائي لرقم الواتساب."""
         if clinic_id:
             self.clinic_id = uuid.UUID(str(clinic_id))
         if clinic_slug:
             self.clinic_slug = clinic_slug.strip().lower()
 
+        # استخراج رقم هاتف المريض تلقائياً من جلسة الواتساب إذا لم يتم تمريره
+        if not patient_phone and session_id.startswith("wa_"):
+            patient_phone = re.sub(r"\D", "", session_id.replace("wa_", "").strip())
+
         clinic = await self._resolve_clinic()
-        clinic_name = clinic.name if clinic else "العيادة التخصصية للأسنان"
-        clinic_address = clinic.address if clinic and clinic.address else "مقر العيادة الرئيسي"
+        clinic_name = clinic.name if clinic else "مركز وايت سمايل"
+        clinic_address = (
+            clinic.address if clinic and clinic.address else "مقر العيادة الرئيسي"
+        )
         clinic_phone = clinic.phone if clinic and clinic.phone else "استقبال العيادة"
-        
-        # قراءة رابط خرائط جوجل GPS من إعدادات العيادة
+
         clinic_cfg = clinic.settings if clinic and clinic.settings else {}
         gps_link = clinic_cfg.get("gps_link", "")
 
-        tenant_identifier = str(self.clinic_id) if self.clinic_id else (self.clinic_slug or "default")
+        tenant_identifier = (
+            str(self.clinic_id) if self.clinic_id else (self.clinic_slug or "default")
+        )
         tenant_session_key = f"{tenant_identifier}:{session_id}"
 
         if tenant_session_key not in chat_memory_store:
@@ -429,8 +492,8 @@ class DentalAgent:
 
         if len(history) >= MAX_SESSION_MESSAGES:
             return (
-                "وصلت هذه المحادثة للحد الأقصى المسموح به (50 رسالة). "
-                f"يرجى بدء محادثة جديدة أو التواصل مع {clinic_name} هاتفياً على ({clinic_phone})."
+                "وصلت هذه المحادثة للحد الأقصى المسموح به. "
+                f"يرجى التواصل مع {clinic_name} هاتفياً على ({clinic_phone})."
             )
 
         sec_res = security_service.inspect_message(
@@ -439,13 +502,17 @@ class DentalAgent:
         )
 
         if not sec_res.is_safe:
-            logger.warning("prompt_injection_blocked", session_id=session_id, clinic_id=str(self.clinic_id))
+            logger.warning(
+                "prompt_injection_blocked",
+                session_id=session_id,
+                clinic_id=str(self.clinic_id),
+            )
             return sec_res.refusal_message
 
         if sec_res.is_escalated and "تواصل" not in message:
             return (
                 "يبدو أن لديك استفسارات تخصصية دقيقة. "
-                f"حرصاً على تقديم أفضل رعاية طبية لك، يرجى التواصل مع استقبال {clinic_name} مباشرة على ({clinic_phone}). 📞"
+                f"يرجى التواصل مع استقبال {clinic_name} مباشرة على ({clinic_phone}). 📞"
             )
 
         router_res = intent_router.route_message(message)
@@ -455,11 +522,8 @@ class DentalAgent:
             chat_memory_store[tenant_session_key] = history
             return router_res.response_text
 
-        try:
-            context = await self.retriever.search(message, clinic_id=self.clinic_id)
-        except Exception as exc:
-            logger.error("qdrant_retrieval_failed", error=str(exc), clinic_id=str(self.clinic_id))
-            context = "لا توجد معلومات إضافية."
+        # إلغاء استدعاء البحث الدلالي المعطل لتسريع الرد فوراً
+        context = ""
 
         live_services_context = await self._get_live_services_context()
         live_clinic_config = self._get_live_clinic_config_context(clinic)
@@ -467,67 +531,86 @@ class DentalAgent:
 
         today = date_cls.today().isoformat()
 
-        location_context = f"- عنوان العيادة: {clinic_address}\n- رقم الهاتف: {clinic_phone}"
+        location_context = f"- عنوان العيادة: {clinic_address}\n- هاتف العيادة: {clinic_phone}"
         if gps_link:
-            location_context += f"\n- رابط موقع العيادة على خرائط جوجل (GPS Link): {gps_link}"
+            location_context += (
+                f"\n- موقع العيادة على خرائط جوجل (GPS): {gps_link}"
+            )
+
+        # صياغة توجيهات رقم هاتف الواتساب
+        if patient_phone:
+            phone_prompt_section = f"""
+📱 رقم هاتف المريض الحالي عبر واتساب: {patient_phone}
+🚨 تنبيه مشدد بخصوص رقم الهاتف:
+- المريض يتواصل معك عبر واتساب من رقمه الشخصي ({patient_phone})، لذلك ⛔ يمنع منعاً باتاً أن تطلب منه رقم هاتفه أو تسأله عنه.
+- لا تطلب من المريض إلا 4 بيانات فقط: (الاسم الكامل، السن، الخدمة المطلوبة، واليوم المفضل).
+- عند استدعاء أداة الحجز (book_dental_appointment)، مرّر الرقم ({patient_phone}) تلقائياً كقيمة لـ phone_number دون سؤاله.
+"""
+        else:
+            phone_prompt_section = "- رقم الهاتف للتأكيد والتواصل."
 
         system_prompt = f"""
-    أنت موظف الاستقبال والمساعد الطبي الذكي لعيادة ({clinic_name}).
-    مهمتك خدمة المرضى والرد على استفساراتهم ومساعدتهم في حجز المواعيد بلباقة وسرعة واحترافية.
+أنت موظف الاستقبال والمساعد الطبي الذكي لعيادة ({clinic_name}).
+مهمتك خدمة المرضى والرد على استفساراتهم ومساعدتهم في حجز المواعيد بلباقة وسرعة واحترافية.
 
-    📍 بيانات العيادة وموقعها:
-    {location_context}
+📍 بيانات العيادة وموقعها:
+{location_context}
 
-    ⏰ مواعيد العمل والسياسات:
-    {live_clinic_config}
+⏰ مواعيد العمل والسياسات:
+{live_clinic_config}
 
-    🎁 العروض والخصومات المتاحة حالياً:
-    {live_offers_context}
+🎁 العروض والخصومات المتاحة حالياً:
+{live_offers_context}
 
-    🩺 الخدمات والأسعار الرسمية:
-    {live_services_context}
+🩺 الخدمات والأسعار الرسمية:
+{live_services_context}
 
-    ───────────────
-    🎯 قواعد السلوك والمحادثة (إلزامية ومشددة):
-    1. **الرد على قدر السؤال فقط (ممنوع الإطالة):**
-    - لا تسرد قائمة الخدمات أو الأسعار أبداً إلا إذا سألك المريض عنها صراحة (مثل: "عايز اعرف الأسعار" أو "عندكم خدمات إيه؟").
-    - عند إلقاء التحية (مثل: "السلام عليكم"، "مساء الخير"): رد بتحية لطيفة ومهذبة واسأله كيف تساعده اليوم دون ذكر أي مواعيد أو أسعار.
-    - إذا سأل المريض عن خدمة معينة (مثل: الحشو أو الكشف): أجب عن سعر وتفاصيل تلك الخدمة فقط باختصار.
+───────────────
+🎯 قواعد السلوك والمحادثة (إلزامية ومشددة):
+1. **الرد المباشر ومنع تكرار الترحيب (قاعدة ذهبية):**
+   - ⛔ **الترحيب يكون مرة واحدة فقط في بداية المحادثة:** إذا كانت المحادثة مستمرة وسبق الترحيب بالمريض، يمنع منعاً باتاً تكرار عبارات مثل ("أهلاً بحضرتك"، "مساء النور"، "نورتنا") أو التصرف وكأن المحادثة تبدأ من الصفر. ادخل في صلب الرد مباشرة.
+   - لا تسرد قائمة الخدمات أو الأسعار أبداً إلا إذا سألك المريض عنها صراحة (مثل: "عايز اعرف الأسعار" أو "عندكم خدمات إيه؟").
+   - عند إلقاء التحية فقط في أول رسالة: رحب به باختصار واسأله كيف تساعده اليوم دون ذكر مواعيد أو أسعار.
+   - إذا سأل المريض عن خدمة معينة: أجب عن سعر وتفاصيل تلك الخدمة فقط باختصار.
 
-    2. **الأسلوب واللهجة:**
-    - تحدث بلهجة مصرية مهذبة ورسمية تناسب منشأة طبية مرموقة.
-    - خاطب المريض دائماً بـ "حضرتك" و "يا فندم".
-    - ⛔ يمنع منعاً باتاً استخدام الألفاظ غير الرسمية مثل "حبايبي"، "يا غالي"، أو الرموز التعبيرية المبالغ فيها.
+2. **التعامل الذكي مع أيام العطلات والإجازات:**
+   - 🛑 إذا طلب المريض الحجز في يوم يوافق عطلة للعيادة (مثل يوم الجمعة): **لا ترحب به، ولا تطلب بياناته، ولا تتجاهل اليوم**، بل أبلغه فوراً وبشكل مباشر:
+     *"للأسف يا فندم العيادة بتكون إجازة يوم (اسم اليوم). مواعيد العمل المتاحة عندنا هي: (أيام وساعات العمل الرسمية). يناسب حضرتك نحجز يوم (اقترح أقرب يوم عمل متاح)؟"*
 
-    3. **تنسيق الرسائل (صيغة واتساب):**
-    - اجعل ردودك قصيرة ومريحة للقراءة (من سطرين إلى 4 أسطر كحد أقصى).
-    - لا تستخدم النجوم المزدوجة نهائياً. استخدم نجمة واحدة فقط للكلمات المهمة مثل: *مركز وايت*.
-    - تجنب العناوين الكبيرة بعلامات الشباك (###).
+3. **استمرارية السياق والبناء على ما سبق:**
+   - ابنِ ردك على سياق الحديث السابق؛ إذا كنتما تتحدثان عن خدمة معينة ثم طلب الحجز، ركز على تحديد اليوم المناسب أولاً ثم استكمال البيانات المتبقية دون إعادة طرح أسئلة تمت الإجابة عليها.
 
-    4. **الموقع وخرائط جوجل (GPS):**
-    - إذا طلب المريض العنوان أو اللوكيشن، أرسل له العنوان النصي مع رابط Google Maps الموضح في بيانات العيادة فوراً.
+4. **الأسلوب واللهجة:**
+   - تحدث بلهجة مصرية مهذبة ورسمية تناسب منشأة طبية مرموقة.
+   - خاطب المريض دائماً بـ "حضرتك" و "يا فندم".
+   - ⛔ يمنع استخدام الألفاظ غير الرسمية مثل "حبايبي"، "يا غالي"، وتجنب الرموز التعبيرية الزائدة.
 
-    ───────────────
-    📋 إجراءات جمع بيانات الحجز:
-    لحجز موعد، يجب جمع البيانات الخمسة التالية بلباقة، واحداً تلو الآخر أو حسب تدفق الحديث:
-    1. الاسم بالكامل
-    2. السن
-    3. رقم الهاتف للتأكيد
-    4. الخدمة المطلوب حجزها
-    5. يوم الحضور المفضل (ضمن أيام العمل الرسمية المذكورة أعلاه فقط).
+5. **تنسيق الرسائل (صيغة واتساب):**
+   - اجعل ردودك مركزة ومريحة للقراءة (من سطرين إلى 4 أسطر كحد أقصى).
+   - لا تستخدم النجوم المزدوجة نهائياً. استخدم نجمة واحدة فقط للكلمات المهمة مثل: *مركز وايت*.
+   - تجنب العناوين الكبيرة بعلامات الشباك (###).
 
-    🚨 شروط استدعاء أداة الحجز (book_dental_appointment):
-    1. ⛔ **يمنع منعاً باتاً** استدعاء أداة الحجز إذا كان هناك أي بيان ناقص من البيانات الخمسة (خصوصاً السن ورقم الهاتف). اطلب البيان الناقص أولاً ولا تنفذ الحجز.
-    2. 📅 **تحويل التاريخ لصيغة رقمية ISO (YYYY-MM-DD):**
-    - التاريخ الحالي اليوم هو: ({today}).
-    - احسب التاريخ الفعلي لليوم الذي يختاره المريض وحوله إلى صيغة رقمية مثل (2026-09-06).
-    - ⛔ يمنع تمرير نصوص مثل "الأحد" أو "غداً" كقيمة لتاريخ الحجز في الأداة.
-    3. **أيام وساعات العمل:** لا توافق على أي يوم حجز يوافق عطلة للعيادة حسب جدول الداشبورد أعلاه.
-    4. **نظام الدخول:** وضّح للمريض دائماً عند تأكيد الحجز أن الدخول يكون بـ *أسبقية الحضور* خلال ساعات العمل المقررة.
-    5. **سياسة الحجز المزدوج:** لا تسمح بأكثر من حجز نشط واحد لنفس رقم الهاتف.
+6. **الموقع وخرائط جوجل (GPS):**
+   - إذا طلب المريض العنوان أو اللوكيشن، أرسل له العنوان النصي ورابط Google Maps فوراً.
 
-    معلومات السياق الإضافي:
-{{context}}
+───────────────
+📋 إجراءات جمع بيانات الحجز:
+{phone_prompt_section}
+البيانات المطلوب جمعها من المريض:
+1. الاسم بالكامل
+2. السن
+3. الخدمة المطلوب حجزها
+4. يوم الحضور المفضل (يجب التأكد أولاً أنه ضمن أيام العمل الرسمية المذكورة أعلاه).
+
+🚨 شروط استدعاء أداة الحجز (book_dental_appointment):
+1. ⛔ **يمنع منعاً باتاً** استدعاء أداة الحجز إذا كان هناك أي بيان ناقص من البيانات المطلوبة (الاسم، السن، الخدمة، تاريخ الحجز)، أو إذا كان اليوم المختار يوم عطلة.
+2. 📅 **تحويل التاريخ لصيغة رقمية ISO (YYYY-MM-DD):**
+   - التاريخ الحالي اليوم هو: ({today}).
+   - احسب التاريخ الفعلي لليوم الذي يختاره المريض وحوله إلى صيغة رقمية مثل (2026-09-06).
+   - ⛔ يمنع تمرير نصوص مثل "الأحد" أو "غداً" كقيمة لتاريخ الحجز في الأداة.
+3. **أيام وساعات العمل:** لا توافق على أي يوم حجز يوافق عطلة للعيادة حسب جدول الداشبورد أعلاه.
+4. **نظام الدخول:** وضّح للمريض دائماً عند تأكيد الحجز أن الدخول يكون بـ *أسبقية الحضور* خلال ساعات العمل المقررة.
+5. **سياسة الحجز المزدوج:** لا تسمح بأكثر من حجز نشط واحد لنفس رقم الهاتف.
 """
 
         prompt_template = ChatPromptTemplate.from_messages(
@@ -539,10 +622,14 @@ class DentalAgent:
         )
 
         try:
-            logger.info("generating_ai_response", session=session_id, clinic_id=str(self.clinic_id), slug=self.clinic_slug)
+            logger.info(
+                "generating_ai_response",
+                session=session_id,
+                clinic_id=str(self.clinic_id),
+                slug=self.clinic_slug,
+            )
 
             messages = prompt_template.format_messages(
-                context=(context if context else "لا توجد معلومات إضافية."),
                 chat_history=history,
                 user_message=message,
             )
@@ -554,6 +641,13 @@ class DentalAgent:
                 tool_call = response.tool_calls[0]
                 if tool_call["name"] == "book_dental_appointment":
                     args = tool_call["args"]
+                    # ضمان استخدام رقم هاتف الواتساب في حال لم يمرره النموذج
+                    if patient_phone and (
+                        not args.get("phone_number")
+                        or len(str(args.get("phone_number", "")).strip()) < 8
+                    ):
+                        args["phone_number"] = patient_phone
+
                     tool_result = await self.book_dental_appointment(**args)
 
                     messages.append(response)
@@ -570,7 +664,9 @@ class DentalAgent:
                     except Exception:
                         raw_content = None
 
-                    if not raw_content or (isinstance(raw_content, str) and not raw_content.strip()):
+                    if not raw_content or (
+                        isinstance(raw_content, str) and not raw_content.strip()
+                    ):
                         raw_content = tool_result
                 else:
                     raw_content = response.content
@@ -585,7 +681,9 @@ class DentalAgent:
                 ]
                 final_text = " ".join(text_parts)
             elif not raw_content or not str(raw_content).strip():
-                final_text = tool_result if tool_result else "تم تنفيذ طلبك بنجاح."
+                final_text = (
+                    tool_result if tool_result else "تم تنفيذ طلبك بنجاح."
+                )
             else:
                 final_text = str(raw_content)
 
@@ -602,7 +700,12 @@ class DentalAgent:
 
         except Exception as exc:
             await self.db.rollback()
-            logger.error("agent_execution_failed", error=str(exc), session=session_id, clinic_id=str(self.clinic_id))
+            logger.error(
+                "agent_execution_failed",
+                error=str(exc),
+                session=session_id,
+                clinic_id=str(self.clinic_id),
+            )
             return (
                 "حدث خطأ مؤقت في نظام الذكاء الاصطناعي. "
                 f"يمكنك إكمال الحجز عن طريق الاتصال بـ {clinic_name} مباشرة على ({clinic_phone}) أو المحاولة لاحقاً."
