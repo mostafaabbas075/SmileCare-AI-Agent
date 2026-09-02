@@ -34,15 +34,11 @@ class ToggleAIRequest(BaseModel):
     clinic_slug: str = "white"
 
 
-# ── Helpers: Format & Clean Phone ───────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def format_text_for_whatsapp(text: str) -> str:
-    """تحويل علامات Markdown العامة إلى صيغة واتساب المقروءة:
-
-    - استبدال **نص عريض** بـ *نص عريض*
-    - إزالة علامات العناوين ###
-    """
+    """تحويل علامات Markdown العامة إلى صيغة واتساب المقروءة."""
     if not text:
         return ""
     formatted = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
@@ -56,44 +52,31 @@ def clean_phone_number(phone: str) -> str:
     return re.sub(r"\D", "", phone.replace("wa_", "").strip())
 
 
-# ── Meta Status & Typing Indicator Helper ───────────────────────────────────
-
-
-async def send_typing_and_read_indicator(
+async def mark_message_as_read(
     phone_number_id: str,
     message_id: str,
     access_token: str,
 ):
-    """إرسال علامة القراءة الزرقاء الفورية وتفعيل الثلاث نقاط (يكتب الآن...
-
-    / Typing Indicator).
-    """
+    """إرسال إشعار القراءة الرسمي لـ Meta لتحويل الصحين إلى اللون الأزرق."""
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
-    # يدعم واتساب كلا من status: read ومؤشر الكتابة typing_indicator
     payload = {
         "messaging_product": "whatsapp",
         "status": "read",
         "message_id": message_id,
-        "typing_indicator": {"type": "text"},
     }
-
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
-            # في حال لم يدعم الحساب مؤشر الكتابة يتم إرسال علامة القراءة كبديل احتياطي
-            if resp.status_code != 200:
-                fallback_payload = {
-                    "messaging_product": "whatsapp",
-                    "status": "read",
-                    "message_id": message_id,
-                }
-                await client.post(url, headers=headers, json=fallback_payload)
+            if resp.status_code == 200:
+                logger.info("message_marked_as_read_blue_ticks", msg_id=message_id)
+            else:
+                logger.warning("mark_as_read_failed", status=resp.status_code, body=resp.text)
     except Exception as exc:
-        logger.debug("typing_indicator_skipped", error=str(exc))
+        logger.debug("mark_as_read_exception", error=str(exc))
 
 
 # ── Webhook Verification & Receiving ─────────────────────────────────────────
@@ -114,7 +97,7 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def receive_whatsapp_message(request: Request):
-    """استقبال رسائل المرضى، إرسال مؤشر القراءة والكتابة فوراً، والرد بالـ AI."""
+    """استقبال رسائل المرضى، تحويل الصحين لأزرق، والرد بالذكاء الاصطناعي."""
     payload = await request.json()
 
     for entry in payload.get("entry", []):
@@ -140,7 +123,7 @@ async def receive_whatsapp_message(request: Request):
                 continue
 
             async with AsyncSessionFactory() as db:
-                # 1. مطابقة العيادة بالرقم أو اختيار عيادة white
+                # 1. مطابقة العيادة
                 stmt = (
                     select(Clinic)
                     .where(
@@ -164,16 +147,18 @@ async def receive_whatsapp_message(request: Request):
                 clinic = res.scalar_one_or_none()
 
                 if not clinic:
-                    logger.warning(
-                        "clinic_not_found", phone_number_id=phone_number_id
-                    )
+                    logger.warning("clinic_not_found", phone_number_id=phone_number_id)
                     continue
 
                 clinic_settings = clinic.settings or {}
                 access_token = clinic_settings.get("whatsapp_access_token")
                 session_key = f"wa_{sender_phone}"
 
-                # 2. تسجيل رسالة المريض الواردة في السجل
+                # 2. تحويل الصحين للأزرق فوراً
+                if msg_id and access_token:
+                    await mark_message_as_read(str(phone_number_id), msg_id, access_token)
+
+                # 3. تسجيل رسالة المريض الواردة في السجل
                 user_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="user",
@@ -182,35 +167,17 @@ async def receive_whatsapp_message(request: Request):
                 db.add(user_msg_entry)
                 await db.commit()
 
-                # 3. التحقق هل الـ AI متوقف يدوياً لهذه المحادثة
+                # 4. التحقق هل الـ AI متوقف يدوياً لهذه المحادثة
                 paused_numbers = clinic_settings.get("paused_ai_numbers", [])
-                if (
-                    sender_phone in paused_numbers
-                    or raw_phone in paused_numbers
-                ):
-                    logger.info(
-                        "ai_reply_skipped_manual_mode", phone=sender_phone
-                    )
-                    # علامة قراءة فقط حتى يعلم الموظف بالرسالة
-                    if msg_id and access_token:
-                        await send_typing_and_read_indicator(
-                            str(phone_number_id), msg_id, access_token
-                        )
+                if sender_phone in paused_numbers or raw_phone in paused_numbers:
+                    logger.info("ai_reply_skipped_manual_mode", phone=sender_phone)
                     continue
 
                 if not access_token:
-                    logger.warning(
-                        "missing_whatsapp_access_token", clinic_slug=clinic.slug
-                    )
+                    logger.warning("missing_whatsapp_access_token", clinic_slug=clinic.slug)
                     continue
 
-                # 4. 🔥 إظهار علامتي الصح الزرقاء ومؤشر الثلاث نقاط المتحركة (يكتب الآن...) فوراً للمريض
-                if msg_id:
-                    await send_typing_and_read_indicator(
-                        str(phone_number_id), msg_id, access_token
-                    )
-
-                # 5. تشغيل الـ AI Agent
+                # 5. تشغيل الـ AI Agent مع تمرير رقم الهاتف للحجز التلقائي
                 agent = DentalAgent(db_session=db, clinic_id=clinic.id)
                 ai_reply = await agent.run(
                     message=user_text,
@@ -228,7 +195,7 @@ async def receive_whatsapp_message(request: Request):
                 db.add(ai_msg_entry)
                 await db.commit()
 
-                # 7. إرسال الرد للمريض (تختفي علامة الكتابة تلقائياً بمجرد تسليم الرسالة)
+                # 7. إرسال الرد للمريض على واتساب بتنسيق نظيف
                 await send_whatsapp_message(
                     phone_number_id=str(phone_number_id),
                     recipient_phone=sender_phone,
@@ -297,7 +264,7 @@ async def get_recent_conversations(clinic_slug: str = "white"):
 
 @router.get("/chats/{phone_number}/messages")
 async def get_chat_history(phone_number: str):
-    """جلب سجل الرسائل بالكامل وتحديد رسائل الموظف تلقائياً."""
+    """جلب سجل الرسائل بالكامل وتحديد رسائل الموظف تلقائياً لتظهر خضراء بالداشبورد."""
     clean_phone = clean_phone_number(phone_number)
     session_id = f"wa_{clean_phone}"
 
@@ -321,6 +288,7 @@ async def get_chat_history(phone_number: str):
             role = m.role
             content = m.content or ""
 
+            # تحويل الرسائل التي أرسلها الموظف إلى role='staff' ليعرضها الفرونت باللون الأخضر
             if role == "assistant" and content.startswith("[موظف العيادة]:"):
                 role = "staff"
                 content = content.replace("[موظف العيادة]:", "").strip()
@@ -341,7 +309,7 @@ async def get_chat_history(phone_number: str):
 
 @router.post("/chats/send-manual")
 async def send_manual_message(req: ManualMessageRequest):
-    """إرسال رسالة يدوية من موظف العيادة وتخزينها بأمان في قاعدة البيانات."""
+    """إرسال رسالة يدوية من موظف العيادة وتخزينها بأمان متوافق مع Postgres Enum."""
     clean_phone = clean_phone_number(req.phone_number)
     if not clean_phone or not req.message.strip():
         raise HTTPException(status_code=400, detail="Invalid phone or message")
@@ -379,7 +347,7 @@ async def send_manual_message(req: ManualMessageRequest):
                 status_code=400, detail="Missing WhatsApp credentials"
             )
 
-        # 1. إرسال الرسالة للمريض على واتساب
+        # 1. إرسال الرسالة إلى واتساب المريض
         is_sent = await send_whatsapp_message(
             phone_number_id=str(phone_id),
             recipient_phone=clean_phone,
@@ -392,28 +360,15 @@ async def send_manual_message(req: ManualMessageRequest):
                 status_code=502, detail="Failed to send message via WhatsApp"
             )
 
-        # 2. تسجيل رسالة الموظف في قاعدة البيانات مع دعم قيود الـ Enum
+        # 2. الحفظ المباشر كـ assistant مع البادئة لتفادي قيود الـ Enum نهائياً
         session_id = f"wa_{clean_phone}"
-        try:
-            staff_entry = ConversationHistory(
-                session_id=session_id,
-                role="staff",
-                content=req.message,
-            )
-            db.add(staff_entry)
-            await db.commit()
-        except Exception as exc:
-            logger.warning(
-                "role_staff_db_constraint_fallback", error=str(exc)
-            )
-            await db.rollback()
-            staff_entry = ConversationHistory(
-                session_id=session_key,
-                role="assistant",
-                content=f"[موظف العيادة]: {req.message}",
-            )
-            db.add(staff_entry)
-            await db.commit()
+        staff_entry = ConversationHistory(
+            session_id=session_id,
+            role="assistant",
+            content=f"[موظف العيادة]: {req.message.strip()}",
+        )
+        db.add(staff_entry)
+        await db.commit()
 
         return {"status": "success", "message": "Sent successfully"}
 
