@@ -52,12 +52,12 @@ def clean_phone_number(phone: str) -> str:
     return re.sub(r"\D", "", phone.replace("wa_", "").strip())
 
 
-async def mark_message_as_read(
+async def send_typing_and_read_indicator(
     phone_number_id: str,
     message_id: str,
     access_token: str,
 ):
-    """إرسال إشعار القراءة الرسمي لـ Meta لتحويل الصحين إلى اللون الأزرق."""
+    """إرسال علامة القراءة الزرقاء ومؤشر الثلاث نقاط المتحركة (يكتب الآن... / Typing Indicator)."""
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -67,16 +67,25 @@ async def mark_message_as_read(
         "messaging_product": "whatsapp",
         "status": "read",
         "message_id": message_id,
+        "typing_indicator": {
+            "type": "text"
+        },
     }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code == 200:
-                logger.info("message_marked_as_read_blue_ticks", msg_id=message_id)
+                logger.info("typing_indicator_and_read_sent", msg_id=message_id)
             else:
-                logger.warning("mark_as_read_failed", status=resp.status_code, body=resp.text)
+                # محاولة بديلة في حالة الـ fallback
+                fallback = {
+                    "messaging_product": "whatsapp",
+                    "status": "read",
+                    "message_id": message_id,
+                }
+                await client.post(url, headers=headers, json=fallback)
     except Exception as exc:
-        logger.debug("mark_as_read_exception", error=str(exc))
+        logger.debug("typing_indicator_exception", error=str(exc))
 
 
 # ── Webhook Verification & Receiving ─────────────────────────────────────────
@@ -97,7 +106,7 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def receive_whatsapp_message(request: Request):
-    """استقبال رسائل المرضى، تحويل الصحين لأزرق، والرد بالذكاء الاصطناعي."""
+    """استقبال رسائل المرضى، تشغيل علامة الصح ومؤشر الكتابة فوراً، والرد بالـ AI."""
     payload = await request.json()
 
     for entry in payload.get("entry", []):
@@ -154,11 +163,11 @@ async def receive_whatsapp_message(request: Request):
                 access_token = clinic_settings.get("whatsapp_access_token")
                 session_key = f"wa_{sender_phone}"
 
-                # 2. تحويل الصحين للأزرق فوراً
+                # 2. إرسال علامة القراءة وتشغيل حركة الـ Typing (الثلاث نقاط) فوراً للمريض
                 if msg_id and access_token:
-                    await mark_message_as_read(str(phone_number_id), msg_id, access_token)
+                    await send_typing_and_read_indicator(str(phone_number_id), msg_id, access_token)
 
-                # 3. تسجيل رسالة المريض الواردة في السجل
+                # 3. تسجيل رسالة المريض في السجل
                 user_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="user",
@@ -177,7 +186,7 @@ async def receive_whatsapp_message(request: Request):
                     logger.warning("missing_whatsapp_access_token", clinic_slug=clinic.slug)
                     continue
 
-                # 5. تشغيل الـ AI Agent مع تمرير رقم الهاتف للحجز التلقائي
+                # 5. تشغيل الـ AI Agent
                 agent = DentalAgent(db_session=db, clinic_id=clinic.id)
                 ai_reply = await agent.run(
                     message=user_text,
@@ -195,7 +204,7 @@ async def receive_whatsapp_message(request: Request):
                 db.add(ai_msg_entry)
                 await db.commit()
 
-                # 7. إرسال الرد للمريض على واتساب بتنسيق نظيف
+                # 7. إرسال الرد للمريض على واتساب
                 await send_whatsapp_message(
                     phone_number_id=str(phone_number_id),
                     recipient_phone=sender_phone,
@@ -264,7 +273,7 @@ async def get_recent_conversations(clinic_slug: str = "white"):
 
 @router.get("/chats/{phone_number}/messages")
 async def get_chat_history(phone_number: str):
-    """جلب سجل الرسائل بالكامل وتحديد رسائل الموظف تلقائياً لتظهر خضراء بالداشبورد."""
+    """جلب سجل الرسائل بالكامل وتحديد رسائل الموظف تلقائياً."""
     clean_phone = clean_phone_number(phone_number)
     session_id = f"wa_{clean_phone}"
 
@@ -288,7 +297,6 @@ async def get_chat_history(phone_number: str):
             role = m.role
             content = m.content or ""
 
-            # تحويل الرسائل التي أرسلها الموظف إلى role='staff' ليعرضها الفرونت باللون الأخضر
             if role == "assistant" and content.startswith("[موظف العيادة]:"):
                 role = "staff"
                 content = content.replace("[موظف العيادة]:", "").strip()
@@ -309,7 +317,7 @@ async def get_chat_history(phone_number: str):
 
 @router.post("/chats/send-manual")
 async def send_manual_message(req: ManualMessageRequest):
-    """إرسال رسالة يدوية من موظف العيادة وتخزينها بأمان متوافق مع Postgres Enum."""
+    """إرسال رسالة يدوية من موظف العيادة وتخزينها بأمان كـ assistant مع الوسم."""
     clean_phone = clean_phone_number(req.phone_number)
     if not clean_phone or not req.message.strip():
         raise HTTPException(status_code=400, detail="Invalid phone or message")
@@ -360,7 +368,7 @@ async def send_manual_message(req: ManualMessageRequest):
                 status_code=502, detail="Failed to send message via WhatsApp"
             )
 
-        # 2. الحفظ المباشر كـ assistant مع البادئة لتفادي قيود الـ Enum نهائياً
+        # 2. الحفظ المباشر في قاعدة البيانات
         session_id = f"wa_{clean_phone}"
         staff_entry = ConversationHistory(
             session_id=session_id,
