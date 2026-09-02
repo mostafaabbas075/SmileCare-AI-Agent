@@ -292,10 +292,18 @@ class DentalAgent:
             except ValueError:
                 return "تعذر فهم تاريخ الموعد. يجب أن يكون بصيغة YYYY-MM-DD."
 
+            # الكود الجديد: اعتماد وقت فتح العيادة المسجل في الداشبورد تلقائياً
+            clinic_cfg = clinic.settings or {}
+            default_open_time = clinic_cfg.get("opening_time", "17:00")
+
             try:
-                appointment_time = time_cls.fromisoformat(time)
+            # إذا كان الوقت فارغاً أو 16:00 الافتراضي، يتم استخدام وقت فتح العيادة الفعلي
+                if not time or time == "16:00":
+                    appointment_time = time_cls.fromisoformat(default_open_time)
+                else:
+                    appointment_time = time_cls.fromisoformat(time)
             except ValueError:
-                appointment_time = time_cls(16, 0)
+                appointment_time = time_cls.fromisoformat(default_open_time)
 
             clean_phone = re.sub(r"\D", "", phone_number.replace("wa_", "").strip())
             name_parts = patient_name.strip().split()
