@@ -48,10 +48,15 @@ def format_text_for_whatsapp(text: str) -> str:
 
 
 def clean_phone_number(phone: str) -> str:
-    """تنظيف رقم الهاتف من أي إضافات مثل wa_ أو علامة + أو مسافات."""
+    """تنظيف المعرف سواء كان رقم هاتف محلي أو Meta User ID مشفر (EG.xxxx)."""
     if not phone:
         return ""
-    return re.sub(r"\D", "", str(phone).replace("wa_", "").strip())
+    cleaned = str(phone).replace("wa_", "").strip()
+    # لو معرف مستخدم مشفر من ميتا يحتوي على حروف أو نقط، نحافظ عليه كما هو
+    if "." in cleaned or any(c.isalpha() for c in cleaned):
+        return cleaned.replace(" ", "")
+    # لو رقم هاتف عادي نحذف أي مسافات أو رموز غير الأرقام
+    return re.sub(r"\D", "", cleaned)
 
 
 async def send_typing_and_read_indicator(
@@ -59,7 +64,7 @@ async def send_typing_and_read_indicator(
     message_id: str,
     access_token: str,
 ):
-    """إرسال علامة القراءة الزرقاء ومؤشر الثلاث نقاط المتحركة (يكتب الآن...)."""
+    """إرسال علامة القراءة الزرقاء ومؤشر الثلاث نقاط المتحركة."""
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -126,28 +131,24 @@ async def receive_whatsapp_message(request: Request):
 
             msg_id = msg.get("id")
 
-            # 1. استخراج رقم المرسل من كافة الحقول المحتملة
+            # 1. استخراج معرف المرسل (يدعم from العادي و from_user_id المشفر)
             contacts = val.get("contacts") or []
             contact_wa_id = contacts[0].get("wa_id") if contacts else None
+            contact_user_id = contacts[0].get("user_id") if contacts else None
             contact_phone = contacts[0].get("phone_number") if contacts else None
 
             raw_phone = (
                 msg.get("from")
+                or msg.get("from_user_id")
                 or contact_wa_id
+                or contact_user_id
                 or contact_phone
                 or msg.get("sender_id")
                 or msg.get("recipient_id")
             )
 
-            # لو الرقم مش موجود نهائياً، نطبع محتوى الـ payload كاملاً في اللوج للتشخيص
             if not raw_phone:
-                logger.warning(
-                    "ignoring_message_without_phone",
-                    msg_id=msg_id,
-                    msg_keys=list(msg.keys()),
-                    val_keys=list(val.keys()),
-                    raw_msg=msg,
-                )
+                logger.warning("ignoring_message_without_phone", msg_id=msg_id, raw_msg=msg)
                 continue
 
             sender_phone = clean_phone_number(str(raw_phone))
