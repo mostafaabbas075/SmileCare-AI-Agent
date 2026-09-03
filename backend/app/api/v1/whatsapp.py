@@ -106,7 +106,7 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def receive_whatsapp_message(request: Request):
-    """استقبال رسائل المرضى، تشغيل علامة الصح ومؤشر الكتابة فوراً، والرد بالـ AI."""
+    """استقبال رسائل المرضى، تشغيل علامة الصح ومؤشر الكتابة، والرد بالـ AI."""
     payload = await request.json()
 
     for entry in payload.get("entry", []):
@@ -124,15 +124,25 @@ async def receive_whatsapp_message(request: Request):
                 continue
 
             msg_id = msg.get("id")
-            raw_phone = str(msg.get("from"))
-            sender_phone = clean_phone_number(raw_phone)
+            
+            # 1. استخراج رقم التليفون بأمان من الرسالة أو من جهات الاتصال
+            raw_phone = msg.get("from")
+            if not raw_phone and val.get("contacts"):
+                raw_phone = val["contacts"][0].get("wa_id")
+
+            # لو مفيش رقم تليفون حقيقي، نتجاهل الرسالة فوراً ولا نشغل الـ AI
+            if not raw_phone:
+                logger.info("ignoring_message_without_phone", msg_id=msg_id)
+                continue
+
+            sender_phone = clean_phone_number(str(raw_phone))
             user_text = msg.get("text", {}).get("body", "").strip()
 
-            if not user_text or not phone_number_id:
+            if not sender_phone or not user_text or not phone_number_id:
                 continue
 
             async with AsyncSessionFactory() as db:
-                # 1. مطابقة العيادة
+                # مطابقة العيادة
                 stmt = (
                     select(Clinic)
                     .where(
@@ -163,11 +173,11 @@ async def receive_whatsapp_message(request: Request):
                 access_token = clinic_settings.get("whatsapp_access_token")
                 session_key = f"wa_{sender_phone}"
 
-                # 2. إرسال علامة القراءة وتشغيل حركة الـ Typing (الثلاث نقاط) فوراً للمريض
+                # 2. تشغيل علامة القراءة والـ typing للمريض
                 if msg_id and access_token:
                     await send_typing_and_read_indicator(str(phone_number_id), msg_id, access_token)
 
-                # 3. تسجيل رسالة المريض في السجل
+                # 3. حفظ رسالة المريض
                 user_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="user",
@@ -176,9 +186,9 @@ async def receive_whatsapp_message(request: Request):
                 db.add(user_msg_entry)
                 await db.commit()
 
-                # 4. التحقق هل الـ AI متوقف يدوياً لهذه المحادثة
+                # 4. التحقق هل الـ AI متوقف يدوياً
                 paused_numbers = clinic_settings.get("paused_ai_numbers", [])
-                if sender_phone in paused_numbers or raw_phone in paused_numbers:
+                if sender_phone in paused_numbers:
                     logger.info("ai_reply_skipped_manual_mode", phone=sender_phone)
                     continue
 
@@ -195,7 +205,7 @@ async def receive_whatsapp_message(request: Request):
                     patient_phone=sender_phone,
                 )
 
-                # 6. حفظ رد الـ AI في السجل
+                # 6. حفظ رد الـ AI
                 ai_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="assistant",
@@ -204,7 +214,7 @@ async def receive_whatsapp_message(request: Request):
                 db.add(ai_msg_entry)
                 await db.commit()
 
-                # 7. إرسال الرد للمريض على واتساب
+                # 7. إرسال الرد لواتساب
                 await send_whatsapp_message(
                     phone_number_id=str(phone_number_id),
                     recipient_phone=sender_phone,
