@@ -49,7 +49,9 @@ def format_text_for_whatsapp(text: str) -> str:
 
 def clean_phone_number(phone: str) -> str:
     """تنظيف رقم الهاتف من أي إضافات مثل wa_ أو علامة + أو مسافات."""
-    return re.sub(r"\D", "", phone.replace("wa_", "").strip())
+    if not phone:
+        return ""
+    return re.sub(r"\D", "", str(phone).replace("wa_", "").strip())
 
 
 async def send_typing_and_read_indicator(
@@ -57,7 +59,7 @@ async def send_typing_and_read_indicator(
     message_id: str,
     access_token: str,
 ):
-    """إرسال علامة القراءة الزرقاء ومؤشر الثلاث نقاط المتحركة (يكتب الآن... / Typing Indicator)."""
+    """إرسال علامة القراءة الزرقاء ومؤشر الثلاث نقاط المتحركة (يكتب الآن...)."""
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -77,7 +79,6 @@ async def send_typing_and_read_indicator(
             if resp.status_code == 200:
                 logger.info("typing_indicator_and_read_sent", msg_id=message_id)
             else:
-                # محاولة بديلة في حالة الـ fallback
                 fallback = {
                     "messaging_product": "whatsapp",
                     "status": "read",
@@ -124,25 +125,45 @@ async def receive_whatsapp_message(request: Request):
                 continue
 
             msg_id = msg.get("id")
-            
-            # 1. استخراج رقم التليفون بأمان من الرسالة أو من جهات الاتصال
-            raw_phone = msg.get("from")
-            if not raw_phone and val.get("contacts"):
-                raw_phone = val["contacts"][0].get("wa_id")
 
-            # لو مفيش رقم تليفون حقيقي، نتجاهل الرسالة فوراً ولا نشغل الـ AI
+            # 1. استخراج رقم المرسل من كافة الحقول المحتملة
+            contacts = val.get("contacts") or []
+            contact_wa_id = contacts[0].get("wa_id") if contacts else None
+            contact_phone = contacts[0].get("phone_number") if contacts else None
+
+            raw_phone = (
+                msg.get("from")
+                or contact_wa_id
+                or contact_phone
+                or msg.get("sender_id")
+                or msg.get("recipient_id")
+            )
+
+            # لو الرقم مش موجود نهائياً، نطبع محتوى الـ payload كاملاً في اللوج للتشخيص
             if not raw_phone:
-                logger.info("ignoring_message_without_phone", msg_id=msg_id)
+                logger.warning(
+                    "ignoring_message_without_phone",
+                    msg_id=msg_id,
+                    msg_keys=list(msg.keys()),
+                    val_keys=list(val.keys()),
+                    raw_msg=msg,
+                )
                 continue
 
             sender_phone = clean_phone_number(str(raw_phone))
             user_text = msg.get("text", {}).get("body", "").strip()
 
             if not sender_phone or not user_text or not phone_number_id:
+                logger.warning(
+                    "skipping_empty_data",
+                    sender_phone=sender_phone,
+                    has_text=bool(user_text),
+                    phone_number_id=phone_number_id,
+                )
                 continue
 
             async with AsyncSessionFactory() as db:
-                # مطابقة العيادة
+                # 2. مطابقة العيادة
                 stmt = (
                     select(Clinic)
                     .where(
@@ -173,11 +194,11 @@ async def receive_whatsapp_message(request: Request):
                 access_token = clinic_settings.get("whatsapp_access_token")
                 session_key = f"wa_{sender_phone}"
 
-                # 2. تشغيل علامة القراءة والـ typing للمريض
+                # 3. تشغيل علامة القراءة والـ typing للمريض
                 if msg_id and access_token:
                     await send_typing_and_read_indicator(str(phone_number_id), msg_id, access_token)
 
-                # 3. حفظ رسالة المريض
+                # 4. حفظ رسالة المريض في سجل المحادثات
                 user_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="user",
@@ -186,9 +207,9 @@ async def receive_whatsapp_message(request: Request):
                 db.add(user_msg_entry)
                 await db.commit()
 
-                # 4. التحقق هل الـ AI متوقف يدوياً
+                # 5. التحقق هل الرد الآلي متوقف لهذه المحادثة
                 paused_numbers = clinic_settings.get("paused_ai_numbers", [])
-                if sender_phone in paused_numbers:
+                if sender_phone in paused_numbers or str(raw_phone) in paused_numbers:
                     logger.info("ai_reply_skipped_manual_mode", phone=sender_phone)
                     continue
 
@@ -196,7 +217,7 @@ async def receive_whatsapp_message(request: Request):
                     logger.warning("missing_whatsapp_access_token", clinic_slug=clinic.slug)
                     continue
 
-                # 5. تشغيل الـ AI Agent
+                # 6. تشغيل الـ AI Agent
                 agent = DentalAgent(db_session=db, clinic_id=clinic.id)
                 ai_reply = await agent.run(
                     message=user_text,
@@ -205,7 +226,7 @@ async def receive_whatsapp_message(request: Request):
                     patient_phone=sender_phone,
                 )
 
-                # 6. حفظ رد الـ AI
+                # 7. حفظ رد الـ AI في السجل
                 ai_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="assistant",
@@ -214,7 +235,7 @@ async def receive_whatsapp_message(request: Request):
                 db.add(ai_msg_entry)
                 await db.commit()
 
-                # 7. إرسال الرد لواتساب
+                # 8. إرسال الرد لواتساب
                 await send_whatsapp_message(
                     phone_number_id=str(phone_number_id),
                     recipient_phone=sender_phone,
@@ -440,9 +461,12 @@ async def send_whatsapp_message(
     access_token: str,
 ) -> bool:
     """إرسال الرسالة مع ضبط التنسيق ليتوافق مع واتساب وإرجاع حالة النجاح."""
-    clean_text = format_text_for_whatsapp(message_text)
     clean_recipient = clean_phone_number(recipient_phone)
+    if not clean_recipient:
+        logger.error("whatsapp_send_aborted_missing_recipient", raw=recipient_phone)
+        return False
 
+    clean_text = format_text_for_whatsapp(message_text)
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
