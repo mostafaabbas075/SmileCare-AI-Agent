@@ -48,11 +48,11 @@ def format_text_for_whatsapp(text: str) -> str:
 
 
 def clean_phone_number(phone: str) -> str:
-    """تنظيف المعرف سواء كان رقم هاتف محلي أو Meta User ID مشفر (EG.xxxx)."""
+    """تنظيف المعرف سواء كان رقم هاتف صريح أو Meta User ID مشفر (EG.xxxx)."""
     if not phone:
         return ""
     cleaned = str(phone).replace("wa_", "").strip()
-    # لو معرف مستخدم مشفر من ميتا يحتوي على حروف أو نقط، نحافظ عليه كما هو
+    # لو المعرف مشفر ويحتوي على حروف أو نقط، نحافظ عليه كما هو
     if "." in cleaned or any(c.isalpha() for c in cleaned):
         return cleaned.replace(" ", "")
     # لو رقم هاتف عادي نحذف أي مسافات أو رموز غير الأرقام
@@ -131,21 +131,27 @@ async def receive_whatsapp_message(request: Request):
 
             msg_id = msg.get("id")
 
-            # 1. استخراج معرف المرسل (يدعم from العادي و from_user_id المشفر)
+            # 1. استخراج رقم المرسل بأعلى دقة
             contacts = val.get("contacts") or []
             contact_wa_id = contacts[0].get("wa_id") if contacts else None
-            contact_user_id = contacts[0].get("user_id") if contacts else None
             contact_phone = contacts[0].get("phone_number") if contacts else None
+            contact_user_id = contacts[0].get("user_id") if contacts else None
 
-            raw_phone = (
-                msg.get("from")
-                or msg.get("from_user_id")
-                or contact_wa_id
-                or contact_user_id
-                or contact_phone
-                or msg.get("sender_id")
-                or msg.get("recipient_id")
-            )
+            # الأولوية الأولى: رقم الهاتف الصريح (أرقام فقط، 8 خانات على الأقل)
+            raw_phone = None
+            for cand in [msg.get("from"), contact_wa_id, contact_phone]:
+                if cand:
+                    cleaned_cand = re.sub(r"\D", "", str(cand))
+                    if len(cleaned_cand) >= 8:
+                        raw_phone = cleaned_cand
+                        break
+
+            # الأولوية الثانية: المعرف المشفر (from_user_id أو user_id)
+            if not raw_phone:
+                for cand in [msg.get("from_user_id"), contact_user_id, contact_wa_id, msg.get("sender_id")]:
+                    if cand and str(cand).strip():
+                        raw_phone = str(cand).strip()
+                        break
 
             if not raw_phone:
                 logger.warning("ignoring_message_without_phone", msg_id=msg_id, raw_msg=msg)
@@ -155,12 +161,6 @@ async def receive_whatsapp_message(request: Request):
             user_text = msg.get("text", {}).get("body", "").strip()
 
             if not sender_phone or not user_text or not phone_number_id:
-                logger.warning(
-                    "skipping_empty_data",
-                    sender_phone=sender_phone,
-                    has_text=bool(user_text),
-                    phone_number_id=phone_number_id,
-                )
                 continue
 
             async with AsyncSessionFactory() as db:
@@ -495,6 +495,7 @@ async def send_whatsapp_message(
                     "whatsapp_send_failed",
                     status_code=resp.status_code,
                     response_body=resp.text,
+                    to=clean_recipient,
                 )
                 return False
     except Exception as exc:
