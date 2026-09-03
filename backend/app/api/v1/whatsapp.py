@@ -48,15 +48,10 @@ def format_text_for_whatsapp(text: str) -> str:
 
 
 def clean_phone_number(phone: str) -> str:
-    """تنظيف المعرف سواء كان رقم هاتف صريح أو Meta User ID مشفر (EG.xxxx)."""
+    """استخراج الأرقام النقية فقط لإسقاط أي معرفات نظام أو حروف."""
     if not phone:
         return ""
-    cleaned = str(phone).replace("wa_", "").strip()
-    # لو المعرف مشفر ويحتوي على حروف أو نقط، نحافظ عليه كما هو
-    if "." in cleaned or any(c.isalpha() for c in cleaned):
-        return cleaned.replace(" ", "")
-    # لو رقم هاتف عادي نحذف أي مسافات أو رموز غير الأرقام
-    return re.sub(r"\D", "", cleaned)
+    return re.sub(r"\D", "", str(phone))
 
 
 async def send_typing_and_read_indicator(
@@ -112,7 +107,7 @@ async def verify_whatsapp_webhook(
 
 @router.post("/webhook")
 async def receive_whatsapp_message(request: Request):
-    """استقبال رسائل المرضى، تشغيل علامة الصح ومؤشر الكتابة، والرد بالـ AI."""
+    """استقبال رسائل المرضى الحقيقيين وتجاهل أحداث النظام."""
     payload = await request.json()
 
     for entry in payload.get("entry", []):
@@ -131,36 +126,18 @@ async def receive_whatsapp_message(request: Request):
 
             msg_id = msg.get("id")
 
-            # 1. استخراج رقم المرسل بأعلى دقة
+            # 1. استخراج الرقم الصريح
             contacts = val.get("contacts") or []
             contact_wa_id = contacts[0].get("wa_id") if contacts else None
-            contact_phone = contacts[0].get("phone_number") if contacts else None
-            contact_user_id = contacts[0].get("user_id") if contacts else None
-
-            # الأولوية الأولى: رقم الهاتف الصريح (أرقام فقط، 8 خانات على الأقل)
-            raw_phone = None
-            for cand in [msg.get("from"), contact_wa_id, contact_phone]:
-                if cand:
-                    cleaned_cand = re.sub(r"\D", "", str(cand))
-                    if len(cleaned_cand) >= 8:
-                        raw_phone = cleaned_cand
-                        break
-
-            # الأولوية الثانية: المعرف المشفر (from_user_id أو user_id)
-            if not raw_phone:
-                for cand in [msg.get("from_user_id"), contact_user_id, contact_wa_id, msg.get("sender_id")]:
-                    if cand and str(cand).strip():
-                        raw_phone = str(cand).strip()
-                        break
-
-            if not raw_phone:
-                logger.warning("ignoring_message_without_phone", msg_id=msg_id, raw_msg=msg)
-                continue
-
-            sender_phone = clean_phone_number(str(raw_phone))
+            
+            raw_phone = msg.get("from") or contact_wa_id
+            sender_phone = clean_phone_number(raw_phone)
             user_text = msg.get("text", {}).get("body", "").strip()
 
-            if not sender_phone or not user_text or not phone_number_id:
+            # 🛑 فلتر هندسي صارم: يجب أن يحتوي الحدث على نص ورقم هاتف مكون من 8 أرقام على الأقل.
+            # هذا الشرط يسقط تلقائياً إشعارات (Echo) ومعرفات (EG.xxx) الوهمية.
+            if not sender_phone or len(sender_phone) < 8 or not user_text or not phone_number_id:
+                logger.debug("ignored_system_or_echo_event", raw=raw_phone, msg_id=msg_id)
                 continue
 
             async with AsyncSessionFactory() as db:
@@ -199,7 +176,7 @@ async def receive_whatsapp_message(request: Request):
                 if msg_id and access_token:
                     await send_typing_and_read_indicator(str(phone_number_id), msg_id, access_token)
 
-                # 4. حفظ رسالة المريض في سجل المحادثات
+                # 4. حفظ رسالة المريض
                 user_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="user",
@@ -208,9 +185,9 @@ async def receive_whatsapp_message(request: Request):
                 db.add(user_msg_entry)
                 await db.commit()
 
-                # 5. التحقق هل الرد الآلي متوقف لهذه المحادثة
+                # 5. التحقق من التوقف اليدوي
                 paused_numbers = clinic_settings.get("paused_ai_numbers", [])
-                if sender_phone in paused_numbers or str(raw_phone) in paused_numbers:
+                if sender_phone in paused_numbers:
                     logger.info("ai_reply_skipped_manual_mode", phone=sender_phone)
                     continue
 
@@ -227,7 +204,7 @@ async def receive_whatsapp_message(request: Request):
                     patient_phone=sender_phone,
                 )
 
-                # 7. حفظ رد الـ AI في السجل
+                # 7. حفظ الرد
                 ai_msg_entry = ConversationHistory(
                     session_id=session_key,
                     role="assistant",
@@ -236,7 +213,7 @@ async def receive_whatsapp_message(request: Request):
                 db.add(ai_msg_entry)
                 await db.commit()
 
-                # 8. إرسال الرد لواتساب
+                # 8. إرسال الرد
                 await send_whatsapp_message(
                     phone_number_id=str(phone_number_id),
                     recipient_phone=sender_phone,
@@ -252,7 +229,7 @@ async def receive_whatsapp_message(request: Request):
 
 @router.get("/chats/recent")
 async def get_recent_conversations(clinic_slug: str = "white"):
-    """جلب قائمة بآخر المحادثات المفتوحة مع المرضى وحالة الـ AI."""
+    """جلب قائمة بآخر المحادثات المفتوحة."""
     async with AsyncSessionFactory() as db:
         stmt = (
             select(Clinic)
@@ -305,7 +282,7 @@ async def get_recent_conversations(clinic_slug: str = "white"):
 
 @router.get("/chats/{phone_number}/messages")
 async def get_chat_history(phone_number: str):
-    """جلب سجل الرسائل بالكامل وتحديد رسائل الموظف تلقائياً."""
+    """جلب سجل الرسائل بالكامل."""
     clean_phone = clean_phone_number(phone_number)
     session_id = f"wa_{clean_phone}"
 
@@ -349,7 +326,7 @@ async def get_chat_history(phone_number: str):
 
 @router.post("/chats/send-manual")
 async def send_manual_message(req: ManualMessageRequest):
-    """إرسال رسالة يدوية من موظف العيادة وتخزينها بأمان كـ assistant مع الوسم."""
+    """إرسال رسالة يدوية."""
     clean_phone = clean_phone_number(req.phone_number)
     if not clean_phone or not req.message.strip():
         raise HTTPException(status_code=400, detail="Invalid phone or message")
@@ -387,7 +364,6 @@ async def send_manual_message(req: ManualMessageRequest):
                 status_code=400, detail="Missing WhatsApp credentials"
             )
 
-        # 1. إرسال الرسالة إلى واتساب المريض
         is_sent = await send_whatsapp_message(
             phone_number_id=str(phone_id),
             recipient_phone=clean_phone,
@@ -400,7 +376,6 @@ async def send_manual_message(req: ManualMessageRequest):
                 status_code=502, detail="Failed to send message via WhatsApp"
             )
 
-        # 2. الحفظ المباشر في قاعدة البيانات
         session_id = f"wa_{clean_phone}"
         staff_entry = ConversationHistory(
             session_id=session_id,
@@ -415,7 +390,7 @@ async def send_manual_message(req: ManualMessageRequest):
 
 @router.post("/chats/toggle-ai")
 async def toggle_ai_mode(req: ToggleAIRequest):
-    """إيقاف أو تفعيل الرد التلقائي للـ AI لمحادثة معينة."""
+    """إيقاف أو تفعيل الرد التلقائي."""
     clean_phone = clean_phone_number(req.phone_number)
 
     async with AsyncSessionFactory() as db:
@@ -461,7 +436,7 @@ async def send_whatsapp_message(
     message_text: str,
     access_token: str,
 ) -> bool:
-    """إرسال الرسالة مع ضبط التنسيق ليتوافق مع واتساب وإرجاع حالة النجاح."""
+    """إرسال الرسالة إلى واتساب."""
     clean_recipient = clean_phone_number(recipient_phone)
     if not clean_recipient:
         logger.error("whatsapp_send_aborted_missing_recipient", raw=recipient_phone)
